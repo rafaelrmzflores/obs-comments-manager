@@ -2,15 +2,17 @@
 /**
  * Plugin Name: OBS Comments Manager
  * Description: Store, tag, search, and track usage of comments received via email for newsletters and fundraising letters.
- * Version: 2.1.0
+ * Version: 2.2.0
  * Author: Custom
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+require_once plugin_dir_path( __FILE__ ) . 'obs-countries.php';
+
 class OBS_Comments_Manager {
 
-    const DB_VERSION = '2.1';
+    const DB_VERSION = '2.2';
     const TABLE      = 'obs_comments';
 
     public function __construct() {
@@ -19,9 +21,8 @@ class OBS_Comments_Manager {
         add_action( 'admin_menu',            [ $this, 'admin_menu' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
 
-        // Form handlers
         add_action( 'admin_post_obs_save_comment',   [ $this, 'handle_save' ] );
-        add_action( 'admin_post_obs_delete_comment', [ $this, 'handle_delete' ] );       // now: move to trash
+        add_action( 'admin_post_obs_delete_comment', [ $this, 'handle_delete' ] );
         add_action( 'admin_post_obs_restore',        [ $this, 'handle_restore' ] );
         add_action( 'admin_post_obs_purge',          [ $this, 'handle_purge' ] );
         add_action( 'admin_post_obs_empty_trash',    [ $this, 'handle_empty_trash' ] );
@@ -31,7 +32,6 @@ class OBS_Comments_Manager {
         add_action( 'admin_post_obs_rename_tag',     [ $this, 'handle_rename_tag' ] );
         add_action( 'admin_post_obs_import',         [ $this, 'handle_import' ] );
 
-        // Dashboard widget
         add_action( 'wp_dashboard_setup',            [ $this, 'register_dashboard_widget' ] );
     }
 
@@ -56,11 +56,13 @@ class OBS_Comments_Manager {
         $table   = $wpdb->prefix . self::TABLE;
         $charset = $wpdb->get_charset_collate();
 
+        // NEW: country CHAR(2) column
         $sql = "CREATE TABLE $table (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             comment_text LONGTEXT NOT NULL,
             author_name VARCHAR(191) DEFAULT '',
             author_email VARCHAR(191) DEFAULT '',
+            country CHAR(2) DEFAULT '',
             source_date DATE DEFAULT NULL,
             tags VARCHAR(500) DEFAULT '',
             usage_count INT UNSIGNED DEFAULT 0,
@@ -73,7 +75,8 @@ class OBS_Comments_Manager {
             KEY tags (tags(100)),
             KEY usage_count (usage_count),
             KEY created_at (created_at),
-            KEY deleted_at (deleted_at)
+            KEY deleted_at (deleted_at),
+            KEY country (country)
         ) $charset;";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -89,26 +92,16 @@ class OBS_Comments_Manager {
             'OBS Comments', 'OBS Comments', 'manage_options',
             'obs-comments', [ $this, 'page_list' ], 'dashicons-format-quote', 25
         );
-        add_submenu_page(
-            'obs-comments', 'Add New Comment', 'Add New', 'manage_options',
-            'obs-comments-new', [ $this, 'page_edit' ]
-        );
-        add_submenu_page(
-            'obs-comments', 'Import from CSV', 'Import CSV', 'manage_options',
-            'obs-comments-import', [ $this, 'page_import' ]
-        );
-        add_submenu_page(
-            'obs-comments', 'Manage Tags', 'Tags', 'manage_options',
-            'obs-comments-tags', [ $this, 'page_tags' ]
-        );
+        add_submenu_page( 'obs-comments', 'Add New Comment', 'Add New', 'manage_options', 'obs-comments-new', [ $this, 'page_edit' ] );
+        add_submenu_page( 'obs-comments', 'Import from CSV', 'Import CSV', 'manage_options', 'obs-comments-import', [ $this, 'page_import' ] );
+        add_submenu_page( 'obs-comments', 'Manage Tags', 'Tags', 'manage_options', 'obs-comments-tags', [ $this, 'page_tags' ] );
 
         $trash_count = $this->get_trash_count();
-        $trash_label = $trash_count ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>' : 'Trash';
+        $trash_label = $trash_count
+            ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>'
+            : 'Trash';
 
-        add_submenu_page(
-            'obs-comments', 'Trash', $trash_label, 'manage_options',
-            'obs-comments-trash', [ $this, 'page_trash' ]
-        );
+        add_submenu_page( 'obs-comments', 'Trash', $trash_label, 'manage_options', 'obs-comments-trash', [ $this, 'page_trash' ] );
     }
 
     public function admin_assets( $hook ) {
@@ -117,7 +110,7 @@ class OBS_Comments_Manager {
             'obs-admin',
             plugin_dir_url( __FILE__ ) . 'obs-admin.js',
             [ 'jquery' ],
-            '2.1.0',
+            '2.2.0',
             true
         );
         wp_localize_script( 'obs-admin', 'obsData', [
@@ -138,6 +131,7 @@ class OBS_Comments_Manager {
 
         $search    = isset( $_GET['s'] )       ? sanitize_text_field( $_GET['s'] )       : '';
         $tag       = isset( $_GET['tag'] )     ? sanitize_text_field( $_GET['tag'] )     : '';
+        $country   = isset( $_GET['country'] ) ? strtoupper( sanitize_text_field( $_GET['country'] ) ) : ''; // NEW
         $unused    = ! empty( $_GET['unused'] );
         $orderby   = isset( $_GET['orderby'] ) ? sanitize_text_field( $_GET['orderby'] ) : 'created_at';
         $order     = ( isset( $_GET['order'] ) && strtoupper( $_GET['order'] ) === 'ASC' ) ? 'ASC' : 'DESC';
@@ -145,10 +139,9 @@ class OBS_Comments_Manager {
         $per_page  = 20;
         $offset    = ( $paged - 1 ) * $per_page;
 
-        $allowed_orderby = [ 'created_at', 'usage_count', 'author_name', 'id' ];
+        $allowed_orderby = [ 'created_at', 'usage_count', 'author_name', 'id', 'country' ]; // NEW: country sortable
         if ( ! in_array( $orderby, $allowed_orderby, true ) ) $orderby = 'created_at';
 
-        // Build WHERE — exclude trashed
         $where  = 'WHERE deleted_at IS NULL';
         $params = [];
 
@@ -160,6 +153,10 @@ class OBS_Comments_Manager {
         if ( $tag ) {
             $where   .= ' AND FIND_IN_SET(%s, tags)';
             $params[] = $tag;
+        }
+        if ( $country ) { // NEW
+            $where   .= ' AND country = %s';
+            $params[] = $country;
         }
         if ( $unused ) {
             $where .= ' AND usage_count = 0';
@@ -177,8 +174,10 @@ class OBS_Comments_Manager {
 
         $unused_count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table WHERE usage_count = 0 AND deleted_at IS NULL" );
 
-        $all_tags = $this->get_all_tags();
-        $base_url = admin_url( 'admin.php?page=obs-comments' );
+        $all_tags          = $this->get_all_tags();
+        $all_countries     = $this->get_countries_in_use(); // NEW
+        $countries_list    = obs_get_countries();           // NEW
+        $base_url          = admin_url( 'admin.php?page=obs-comments' );
 
         ?>
         <div class="wrap">
@@ -194,19 +193,30 @@ class OBS_Comments_Manager {
 
             <form method="get" style="margin:15px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <input type="hidden" name="page" value="obs-comments">
-                <input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="Search comments..." style="min-width:260px;">
+                <input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="Search comments..." style="min-width:220px;">
                 <select name="tag">
                     <option value="">All tags</option>
                     <?php foreach ( $all_tags as $t ) : ?>
                         <option value="<?php echo esc_attr( $t ); ?>" <?php selected( $tag, $t ); ?>><?php echo esc_html( $t ); ?></option>
                     <?php endforeach; ?>
                 </select>
+
+                <!-- NEW: Country filter -->
+                <select name="country">
+                    <option value="">All countries</option>
+                    <?php foreach ( $all_countries as $code ) : ?>
+                        <option value="<?php echo esc_attr( $code ); ?>" <?php selected( $country, $code ); ?>>
+                            <?php echo esc_html( obs_country_name( $code ) ); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+
                 <button class="button">Filter</button>
                 <a href="<?php echo esc_url( $unused ? $base_url : add_query_arg( 'unused', '1', $base_url ) ); ?>"
                    class="button <?php echo $unused ? 'button-primary' : ''; ?>">
                     Never Used (<?php echo $unused_count; ?>)
                 </a>
-                <?php if ( $search || $tag || $unused ) : ?>
+                <?php if ( $search || $tag || $unused || $country ) : ?>
                     <a href="<?php echo esc_url( $base_url ); ?>" class="button">Reset</a>
                 <?php endif; ?>
             </form>
@@ -234,18 +244,22 @@ class OBS_Comments_Manager {
                             <td style="width:30px;"><input type="checkbox" id="obs-select-all"></td>
                             <th style="width:50px;">ID</th>
                             <th>Comment</th>
-                            <th style="width:130px;">Author</th>
-                            <th style="width:160px;">Tags</th>
-                            <th style="width:70px;">
+                            <th style="width:120px;">Author</th>
+                            <!-- NEW: sortable country column -->
+                            <th style="width:130px;">
+                                <a href="<?php echo esc_url( add_query_arg( [ 'orderby' => 'country', 'order' => ( $orderby === 'country' && $order === 'DESC' ) ? 'asc' : 'desc' ] ) ); ?>">Country</a>
+                            </th>
+                            <th style="width:150px;">Tags</th>
+                            <th style="width:60px;">
                                 <a href="<?php echo esc_url( add_query_arg( [ 'orderby' => 'usage_count', 'order' => ( $orderby === 'usage_count' && $order === 'DESC' ) ? 'asc' : 'desc' ] ) ); ?>">Used</a>
                             </th>
-                            <th style="width:110px;">Added</th>
+                            <th style="width:100px;">Added</th>
                             <th style="width:220px;">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if ( empty( $rows ) ) : ?>
-                            <tr><td colspan="8">No comments found.</td></tr>
+                            <tr><td colspan="9">No comments found.</td></tr>
                         <?php else : foreach ( $rows as $row ) :
                             $full = $row->comment_text;
                             $trim = wp_trim_words( $full, 30, '…' );
@@ -262,6 +276,15 @@ class OBS_Comments_Manager {
                                     </div>
                                 </td>
                                 <td><?php echo esc_html( $row->author_name ); ?></td>
+                                <td>
+                                    <?php if ( $row->country ) : ?>
+                                        <a href="<?php echo esc_url( add_query_arg( [ 'country' => $row->country ] ) ); ?>" class="obs-tag">
+                                            <?php echo esc_html( obs_country_name( $row->country ) ); ?>
+                                        </a>
+                                    <?php else : ?>
+                                        <span style="color:#999;">—</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <?php
                                     $row_tags = array_filter( array_map( 'trim', explode( ',', $row->tags ) ) );
@@ -339,7 +362,6 @@ class OBS_Comments_Manager {
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
         $rows  = $wpdb->get_results( "SELECT * FROM $table WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC" );
-
         ?>
         <div class="wrap">
             <h1 class="wp-heading-inline">Trash</h1>
@@ -361,15 +383,16 @@ class OBS_Comments_Manager {
                     <tr>
                         <th style="width:50px;">ID</th>
                         <th>Comment</th>
-                        <th style="width:130px;">Author</th>
-                        <th style="width:160px;">Tags</th>
+                        <th style="width:120px;">Author</th>
+                        <th style="width:130px;">Country</th>
+                        <th style="width:150px;">Tags</th>
                         <th style="width:150px;">Trashed</th>
                         <th style="width:280px;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if ( empty( $rows ) ) : ?>
-                        <tr><td colspan="6">Trash is empty.</td></tr>
+                        <tr><td colspan="7">Trash is empty.</td></tr>
                     <?php else : foreach ( $rows as $row ) : ?>
                         <tr>
                             <td><?php echo intval( $row->id ); ?></td>
@@ -382,6 +405,13 @@ class OBS_Comments_Manager {
                                 </div>
                             </td>
                             <td><?php echo esc_html( $row->author_name ); ?></td>
+                            <td>
+                                <?php if ( $row->country ) : ?>
+                                    <span class="obs-tag"><?php echo esc_html( obs_country_name( $row->country ) ); ?></span>
+                                <?php else : ?>
+                                    <span style="color:#999;">—</span>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <?php
                                 $row_tags = array_filter( array_map( 'trim', explode( ',', $row->tags ) ) );
@@ -415,12 +445,10 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     public function page_import() {
-        // Step 2: process mapping
         if ( isset( $_GET['stage'] ) && $_GET['stage'] === 'map' && ! empty( $_GET['token'] ) ) {
             $this->render_import_mapping( sanitize_text_field( $_GET['token'] ) );
             return;
         }
-        // Step 3: results
         if ( isset( $_GET['stage'] ) && $_GET['stage'] === 'done' ) {
             $imported = intval( $_GET['imported'] ?? 0 );
             $skipped  = intval( $_GET['skipped'] ?? 0 );
@@ -438,8 +466,6 @@ class OBS_Comments_Manager {
             <?php
             return;
         }
-
-        // Step 1: upload
         ?>
         <div class="wrap">
             <h1>Import from CSV</h1>
@@ -448,6 +474,7 @@ class OBS_Comments_Manager {
                 <li><code>comment_text</code> (required)</li>
                 <li><code>author_name</code></li>
                 <li><code>author_email</code></li>
+                <li><code>country</code> (2-letter ISO code OR country name)</li>
                 <li><code>source_date</code> (YYYY-MM-DD)</li>
                 <li><code>tags</code> (comma-separated inside the cell)</li>
                 <li><code>notes</code></li>
@@ -461,12 +488,8 @@ class OBS_Comments_Manager {
                 <input type="hidden" name="action" value="obs_import">
                 <input type="hidden" name="stage" value="upload">
                 <?php wp_nonce_field( 'obs_import_upload' ); ?>
-                <p>
-                    <input type="file" name="csv_file" accept=".csv,text/csv" required>
-                </p>
-                <p>
-                    <button class="button button-primary">Upload &amp; Preview</button>
-                </p>
+                <p><input type="file" name="csv_file" accept=".csv,text/csv" required></p>
+                <p><button class="button button-primary">Upload &amp; Preview</button></p>
             </form>
         </div>
         <?php
@@ -497,12 +520,12 @@ class OBS_Comments_Manager {
             'comment_text' => 'Comment Text (required)',
             'author_name'  => 'Author Name',
             'author_email' => 'Author Email',
+            'country'      => 'Country', // NEW
             'source_date'  => 'Date Received (YYYY-MM-DD)',
             'tags'         => 'Tags',
             'notes'        => 'Notes',
         ];
 
-        // Auto-detect mappings
         $auto = [];
         foreach ( $header as $i => $col ) {
             $key = strtolower( trim( $col ) );
@@ -526,8 +549,7 @@ class OBS_Comments_Manager {
                     </thead>
                     <tbody>
                         <?php foreach ( $header as $i => $col ) :
-                            $sample = '';
-                            if ( isset( $preview[0][ $i ] ) ) $sample = $preview[0][ $i ];
+                            $sample = isset( $preview[0][ $i ] ) ? $preview[0][ $i ] : '';
                             ?>
                             <tr>
                                 <td><strong><?php echo esc_html( $col ); ?></strong></td>
@@ -558,7 +580,7 @@ class OBS_Comments_Manager {
     }
 
     /* ============================================================
-     * ADD / EDIT PAGE  (unchanged from v2.0)
+     * ADD / EDIT PAGE
      * ============================================================ */
 
     public function page_edit() {
@@ -569,6 +591,7 @@ class OBS_Comments_Manager {
 
         $duplicate_of = isset( $_GET['duplicate'] ) ? intval( $_GET['duplicate'] ) : 0;
         $dup_url      = $duplicate_of ? admin_url( 'admin.php?page=obs-comments-new&id=' . $duplicate_of ) : '';
+        $countries    = obs_get_countries(); // NEW
         ?>
         <div class="wrap">
             <h1><?php echo $row ? 'Edit Comment' : 'Add New Comment'; ?></h1>
@@ -603,6 +626,25 @@ class OBS_Comments_Manager {
                         <th><label for="author_email">Author Email</label></th>
                         <td><input type="email" name="author_email" id="author_email" class="regular-text" value="<?php echo esc_attr( $row->author_email ?? '' ); ?>"></td>
                     </tr>
+
+                    <!-- NEW: Country dropdown -->
+                    <tr>
+                        <th><label for="country">Country</label></th>
+                        <td>
+                            <select name="country" id="country" style="min-width:260px;">
+                                <option value="">— Select country —</option>
+                                <?php
+                                $current_country = $row->country ?? '';
+                                foreach ( $countries as $code => $name ) : ?>
+                                    <option value="<?php echo esc_attr( $code ); ?>" <?php selected( $current_country, $code ); ?>>
+                                        <?php echo esc_html( $name ); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <p class="description">Where did this comment come from?</p>
+                        </td>
+                    </tr>
+
                     <tr>
                         <th><label for="source_date">Date Received</label></th>
                         <td><input type="date" name="source_date" id="source_date" value="<?php echo esc_attr( $row->source_date ?? '' ); ?>"></td>
@@ -667,7 +709,6 @@ class OBS_Comments_Manager {
         ?>
         <div class="wrap">
             <h1>Manage Tags</h1>
-
             <div class="card" style="max-width:600px;padding:16px;margin-bottom:20px;">
                 <h2>Rename / Merge Tag</h2>
                 <p>Rename a tag or merge two tags into one (e.g. <code>student</code> → <code>students</code>).</p>
@@ -728,7 +769,7 @@ class OBS_Comments_Manager {
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
         $rows  = $wpdb->get_results(
-            "SELECT id, comment_text, author_name, created_at
+            "SELECT id, comment_text, author_name, country, created_at
              FROM $table
              WHERE usage_count = 0 AND deleted_at IS NULL
              ORDER BY created_at ASC
@@ -758,6 +799,9 @@ class OBS_Comments_Manager {
                 </div>
                 <div style="font-size:11px;color:#666;">
                     <?php echo esc_html( $row->author_name ?: 'Anonymous' ); ?>
+                    <?php if ( $row->country ) : ?>
+                        · <?php echo esc_html( obs_country_name( $row->country ) ); ?>
+                    <?php endif; ?>
                     · <?php echo esc_html( date( 'M j, Y', strtotime( $row->created_at ) ) ); ?>
                     · <a href="#" class="obs-copy" data-target="obs-dash-quote-<?php echo $id; ?>">Copy</a>
                     · <a href="<?php echo esc_url( $url ); ?>">Edit</a>
@@ -796,10 +840,17 @@ class OBS_Comments_Manager {
             }
         }
 
+        // NEW: resolve country to 2-letter code
+        $country = strtoupper( sanitize_text_field( $_POST['country'] ?? '' ) );
+        if ( $country && ! isset( obs_get_countries()[ $country ] ) ) {
+            $country = ''; // discard invalid code
+        }
+
         $data = [
             'comment_text' => $comment_text,
             'author_name'  => sanitize_text_field( $_POST['author_name'] ?? '' ),
             'author_email' => sanitize_email( $_POST['author_email'] ?? '' ),
+            'country'      => $country,
             'source_date'  => ! empty( $_POST['source_date'] ) ? sanitize_text_field( $_POST['source_date'] ) : null,
             'tags'         => $this->normalize_tags( $_POST['tags'] ?? '' ),
             'notes'        => sanitize_textarea_field( $_POST['notes'] ?? '' ),
@@ -823,7 +874,6 @@ class OBS_Comments_Manager {
         exit;
     }
 
-    /** Now: move to trash */
     public function handle_delete() {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
         $id = intval( $_GET['id'] ?? 0 );
@@ -846,11 +896,7 @@ class OBS_Comments_Manager {
         check_admin_referer( 'obs_restore_' . $id );
 
         global $wpdb;
-        $wpdb->update(
-            $wpdb->prefix . self::TABLE,
-            [ 'deleted_at' => null ],
-            [ 'id' => $id ]
-        );
+        $wpdb->update( $wpdb->prefix . self::TABLE, [ 'deleted_at' => null ], [ 'id' => $id ] );
 
         wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-trash&msg=restored' ) );
         exit;
@@ -917,10 +963,12 @@ class OBS_Comments_Manager {
         header( 'Content-Type: text/csv' );
         header( 'Content-Disposition: attachment; filename="obs-comments-' . date( 'Y-m-d' ) . '.csv"' );
         $out = fopen( 'php://output', 'w' );
-        fputcsv( $out, [ 'ID', 'Comment', 'Author', 'Email', 'Date Received', 'Tags', 'Usage Count', 'Usage Log', 'Notes', 'Added' ] );
+        // NEW: Country and Country Name columns
+        fputcsv( $out, [ 'ID', 'Comment', 'Author', 'Email', 'Country', 'Country Name', 'Date Received', 'Tags', 'Usage Count', 'Usage Log', 'Notes', 'Added' ] );
         foreach ( $rows as $r ) {
             fputcsv( $out, [
                 $r['id'], $r['comment_text'], $r['author_name'], $r['author_email'],
+                $r['country'], obs_country_name( $r['country'] ),
                 $r['source_date'], $r['tags'], $r['usage_count'], $r['usage_log'],
                 $r['notes'], $r['created_at'],
             ] );
@@ -951,7 +999,6 @@ class OBS_Comments_Manager {
             if ( ! $row ) continue;
 
             switch ( $action ) {
-
                 case 'trash':
                     $wpdb->update( $table, [ 'deleted_at' => current_time( 'mysql' ) ], [ 'id' => $id ] );
                     break;
@@ -1097,7 +1144,6 @@ class OBS_Comments_Manager {
         $skipped   = 0;
         $errors    = 0;
 
-        // Find index of comment_text mapping
         $comment_index = array_search( 'comment_text', $map, true );
         if ( $comment_index === false ) {
             fclose( $handle );
@@ -1109,6 +1155,7 @@ class OBS_Comments_Manager {
                 'comment_text' => '',
                 'author_name'  => '',
                 'author_email' => '',
+                'country'      => '',   // NEW
                 'source_date'  => null,
                 'tags'         => '',
                 'notes'        => '',
@@ -1131,6 +1178,8 @@ class OBS_Comments_Manager {
                     $data['notes'] = sanitize_textarea_field( $value );
                 } elseif ( $field === 'author_name' ) {
                     $data['author_name'] = sanitize_text_field( $value );
+                } elseif ( $field === 'country' ) {   // NEW: accepts code OR name
+                    $data['country'] = obs_resolve_country( $value );
                 }
             }
 
@@ -1164,7 +1213,6 @@ class OBS_Comments_Manager {
     private function get_upload_dir() {
         $dir = wp_upload_dir()['basedir'] . '/obs-imports';
         if ( ! file_exists( $dir ) ) wp_mkdir_p( $dir );
-        // Protect directory
         $htaccess = $dir . '/.htaccess';
         if ( ! file_exists( $htaccess ) ) file_put_contents( $htaccess, "Deny from all\n" );
         $index = $dir . '/index.html';
@@ -1185,6 +1233,14 @@ class OBS_Comments_Manager {
     private function get_trash_count() {
         global $wpdb;
         return (int) $wpdb->get_var( "SELECT COUNT(*) FROM " . $wpdb->prefix . self::TABLE . " WHERE deleted_at IS NOT NULL" );
+    }
+
+    /** NEW: distinct country codes that appear in non-trashed comments */
+    private function get_countries_in_use() {
+        global $wpdb;
+        $table = $wpdb->prefix . self::TABLE;
+        $codes = $wpdb->get_col( "SELECT DISTINCT country FROM $table WHERE country != '' AND deleted_at IS NULL ORDER BY country ASC" );
+        return array_filter( array_map( 'strtoupper', $codes ) );
     }
 
     private function normalize_tags( $raw ) {
