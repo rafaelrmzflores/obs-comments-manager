@@ -2,7 +2,7 @@
 /**
  * Plugin Name: OBS Comments Manager
  * Description: Store, tag, search, and track usage of comments received via email for newsletters and fundraising letters.
- * Version: 2.0.0
+ * Version: 2.1.0
  * Author: Custom
  */
 
@@ -10,21 +10,29 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class OBS_Comments_Manager {
 
-    const DB_VERSION = '2.0';
+    const DB_VERSION = '2.1';
     const TABLE      = 'obs_comments';
 
     public function __construct() {
         register_activation_hook( __FILE__, [ $this, 'activate' ] );
+        add_action( 'plugins_loaded',        [ $this, 'maybe_upgrade' ] );
         add_action( 'admin_menu',            [ $this, 'admin_menu' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
 
         // Form handlers
         add_action( 'admin_post_obs_save_comment',   [ $this, 'handle_save' ] );
-        add_action( 'admin_post_obs_delete_comment', [ $this, 'handle_delete' ] );
+        add_action( 'admin_post_obs_delete_comment', [ $this, 'handle_delete' ] );       // now: move to trash
+        add_action( 'admin_post_obs_restore',        [ $this, 'handle_restore' ] );
+        add_action( 'admin_post_obs_purge',          [ $this, 'handle_purge' ] );
+        add_action( 'admin_post_obs_empty_trash',    [ $this, 'handle_empty_trash' ] );
         add_action( 'admin_post_obs_log_usage',      [ $this, 'handle_log_usage' ] );
         add_action( 'admin_post_obs_export_csv',     [ $this, 'handle_export' ] );
         add_action( 'admin_post_obs_bulk',           [ $this, 'handle_bulk' ] );
         add_action( 'admin_post_obs_rename_tag',     [ $this, 'handle_rename_tag' ] );
+        add_action( 'admin_post_obs_import',         [ $this, 'handle_import' ] );
+
+        // Dashboard widget
+        add_action( 'wp_dashboard_setup',            [ $this, 'register_dashboard_widget' ] );
     }
 
     /* ============================================================
@@ -32,6 +40,18 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     public function activate() {
+        $this->create_or_upgrade_table();
+        update_option( 'obs_db_version', self::DB_VERSION );
+    }
+
+    public function maybe_upgrade() {
+        if ( get_option( 'obs_db_version' ) !== self::DB_VERSION ) {
+            $this->create_or_upgrade_table();
+            update_option( 'obs_db_version', self::DB_VERSION );
+        }
+    }
+
+    private function create_or_upgrade_table() {
         global $wpdb;
         $table   = $wpdb->prefix . self::TABLE;
         $charset = $wpdb->get_charset_collate();
@@ -48,15 +68,16 @@ class OBS_Comments_Manager {
             notes TEXT DEFAULT '',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            deleted_at DATETIME DEFAULT NULL,
             PRIMARY KEY (id),
             KEY tags (tags(100)),
             KEY usage_count (usage_count),
-            KEY created_at (created_at)
+            KEY created_at (created_at),
+            KEY deleted_at (deleted_at)
         ) $charset;";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta( $sql );
-        update_option( 'obs_db_version', self::DB_VERSION );
     }
 
     /* ============================================================
@@ -73,8 +94,20 @@ class OBS_Comments_Manager {
             'obs-comments-new', [ $this, 'page_edit' ]
         );
         add_submenu_page(
+            'obs-comments', 'Import from CSV', 'Import CSV', 'manage_options',
+            'obs-comments-import', [ $this, 'page_import' ]
+        );
+        add_submenu_page(
             'obs-comments', 'Manage Tags', 'Tags', 'manage_options',
             'obs-comments-tags', [ $this, 'page_tags' ]
+        );
+
+        $trash_count = $this->get_trash_count();
+        $trash_label = $trash_count ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>' : 'Trash';
+
+        add_submenu_page(
+            'obs-comments', 'Trash', $trash_label, 'manage_options',
+            'obs-comments-trash', [ $this, 'page_trash' ]
         );
     }
 
@@ -84,13 +117,14 @@ class OBS_Comments_Manager {
             'obs-admin',
             plugin_dir_url( __FILE__ ) . 'obs-admin.js',
             [ 'jquery' ],
-            '2.0.0',
+            '2.1.0',
             true
         );
         wp_localize_script( 'obs-admin', 'obsData', [
             'copiedMsg'   => __( 'Copied!', 'obs' ),
             'failedMsg'   => __( 'Copy failed — select manually', 'obs' ),
             'confirmBulk' => __( 'Apply this bulk action to the selected comments?', 'obs' ),
+            'confirmPurge'=> __( 'Permanently delete? This cannot be undone.', 'obs' ),
         ]);
     }
 
@@ -114,8 +148,8 @@ class OBS_Comments_Manager {
         $allowed_orderby = [ 'created_at', 'usage_count', 'author_name', 'id' ];
         if ( ! in_array( $orderby, $allowed_orderby, true ) ) $orderby = 'created_at';
 
-        // Build WHERE
-        $where  = 'WHERE 1=1';
+        // Build WHERE — exclude trashed
+        $where  = 'WHERE deleted_at IS NULL';
         $params = [];
 
         if ( $search ) {
@@ -131,20 +165,17 @@ class OBS_Comments_Manager {
             $where .= ' AND usage_count = 0';
         }
 
-        // Data query
         $sql = "SELECT * FROM $table $where ORDER BY $orderby $order LIMIT %d OFFSET %d";
         $data_params = array_merge( $params, [ $per_page, $offset ] );
         $rows = $wpdb->get_results( $wpdb->prepare( $sql, $data_params ) );
 
-        // Total count for pagination
         $count_sql = "SELECT COUNT(*) FROM $table $where";
         $total = $params
             ? $wpdb->get_var( $wpdb->prepare( $count_sql, $params ) )
             : $wpdb->get_var( $count_sql );
         $pages = ceil( $total / $per_page );
 
-        // Unused count for the quick filter badge
-        $unused_count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table WHERE usage_count = 0" );
+        $unused_count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table WHERE usage_count = 0 AND deleted_at IS NULL" );
 
         $all_tags = $this->get_all_tags();
         $base_url = admin_url( 'admin.php?page=obs-comments' );
@@ -153,6 +184,7 @@ class OBS_Comments_Manager {
         <div class="wrap">
             <h1 class="wp-heading-inline">OBS Comments</h1>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=obs-comments-new' ) ); ?>" class="page-title-action">Add New</a>
+            <a href="<?php echo esc_url( admin_url( 'admin.php?page=obs-comments-import' ) ); ?>" class="page-title-action">Import CSV</a>
             <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=obs_export_csv' ), 'obs_export' ) ); ?>" class="page-title-action">Export CSV</a>
             <hr class="wp-header-end">
 
@@ -160,7 +192,6 @@ class OBS_Comments_Manager {
                 <div class="notice notice-success is-dismissible"><p><?php echo esc_html( $this->msg_text( $_GET['msg'] ) ); ?></p></div>
             <?php endif; ?>
 
-            <!-- Filter toolbar -->
             <form method="get" style="margin:15px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <input type="hidden" name="page" value="obs-comments">
                 <input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="Search comments..." style="min-width:260px;">
@@ -187,7 +218,7 @@ class OBS_Comments_Manager {
                 <div style="margin:10px 0;display:flex;gap:8px;align-items:center;">
                     <select name="bulk_action" id="obs-bulk-action">
                         <option value="">Bulk actions</option>
-                        <option value="delete">Delete</option>
+                        <option value="trash">Move to Trash</option>
                         <option value="add_tag">Add tag</option>
                         <option value="remove_tag">Remove tag</option>
                         <option value="mark_used">Mark as used</option>
@@ -246,7 +277,7 @@ class OBS_Comments_Manager {
                                     <a href="#" class="button button-small obs-use" data-id="<?php echo intval( $row->id ); ?>">Log Use</a>
                                     <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=obs_delete_comment&id=' . $row->id ), 'obs_delete_' . $row->id ) ); ?>"
                                        class="button button-small"
-                                       onclick="return confirm('Delete this comment?');">Delete</a>
+                                       onclick="return confirm('Move to trash?');">Trash</a>
                                 </td>
                             </tr>
                         <?php endforeach; endif; ?>
@@ -270,7 +301,6 @@ class OBS_Comments_Manager {
             <?php endif; ?>
         </div>
 
-        <!-- Log Use modal -->
         <div id="obs-use-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;">
             <div style="background:#fff;max-width:500px;margin:100px auto;padding:20px;border-radius:6px;">
                 <h2>Log Usage</h2>
@@ -302,7 +332,233 @@ class OBS_Comments_Manager {
     }
 
     /* ============================================================
-     * ADD / EDIT PAGE
+     * TRASH PAGE
+     * ============================================================ */
+
+    public function page_trash() {
+        global $wpdb;
+        $table = $wpdb->prefix . self::TABLE;
+        $rows  = $wpdb->get_results( "SELECT * FROM $table WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC" );
+
+        ?>
+        <div class="wrap">
+            <h1 class="wp-heading-inline">Trash</h1>
+            <?php if ( ! empty( $rows ) ) : ?>
+                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=obs_empty_trash' ), 'obs_empty_trash' ) ); ?>"
+                   class="page-title-action"
+                   onclick="return confirm('Permanently delete ALL trashed comments? This cannot be undone.');">Empty Trash</a>
+            <?php endif; ?>
+            <hr class="wp-header-end">
+
+            <?php if ( isset( $_GET['msg'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php echo esc_html( $this->msg_text( $_GET['msg'] ) ); ?></p></div>
+            <?php endif; ?>
+
+            <p>Comments here are soft-deleted and can be restored. They will not appear in searches, filters, or exports.</p>
+
+            <table class="wp-list-table widefat fixed striped">
+                <thead>
+                    <tr>
+                        <th style="width:50px;">ID</th>
+                        <th>Comment</th>
+                        <th style="width:130px;">Author</th>
+                        <th style="width:160px;">Tags</th>
+                        <th style="width:150px;">Trashed</th>
+                        <th style="width:280px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ( empty( $rows ) ) : ?>
+                        <tr><td colspan="6">Trash is empty.</td></tr>
+                    <?php else : foreach ( $rows as $row ) : ?>
+                        <tr>
+                            <td><?php echo intval( $row->id ); ?></td>
+                            <td>
+                                <div class="obs-quote" id="obs-quote-<?php echo intval( $row->id ); ?>" data-full="<?php echo esc_attr( $row->comment_text ); ?>">
+                                    <?php echo esc_html( wp_trim_words( $row->comment_text, 30, '…' ) ); ?>
+                                </div>
+                                <div class="row-actions">
+                                    <a href="#" class="obs-toggle" data-target="obs-quote-<?php echo intval( $row->id ); ?>">View Full</a>
+                                </div>
+                            </td>
+                            <td><?php echo esc_html( $row->author_name ); ?></td>
+                            <td>
+                                <?php
+                                $row_tags = array_filter( array_map( 'trim', explode( ',', $row->tags ) ) );
+                                foreach ( $row_tags as $t ) {
+                                    echo '<span class="obs-tag">' . esc_html( $t ) . '</span> ';
+                                }
+                                ?>
+                            </td>
+                            <td><?php echo esc_html( date( 'M j, Y g:ia', strtotime( $row->deleted_at ) ) ); ?></td>
+                            <td>
+                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=obs_restore&id=' . $row->id ), 'obs_restore_' . $row->id ) ); ?>"
+                                   class="button button-small button-primary">Restore</a>
+                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=obs_purge&id=' . $row->id ), 'obs_purge_' . $row->id ) ); ?>"
+                                   class="button button-small"
+                                   onclick="return confirm(obsData.confirmPurge);">Delete Permanently</a>
+                            </td>
+                        </tr>
+                    <?php endforeach; endif; ?>
+                </tbody>
+            </table>
+        </div>
+        <style>
+            .obs-tag{display:inline-block;background:#eef;padding:2px 8px;border-radius:10px;font-size:11px;margin:1px;}
+            .obs-quote{font-style:italic;color:#666;}
+        </style>
+        <?php
+    }
+
+    /* ============================================================
+     * CSV IMPORT PAGE
+     * ============================================================ */
+
+    public function page_import() {
+        // Step 2: process mapping
+        if ( isset( $_GET['stage'] ) && $_GET['stage'] === 'map' && ! empty( $_GET['token'] ) ) {
+            $this->render_import_mapping( sanitize_text_field( $_GET['token'] ) );
+            return;
+        }
+        // Step 3: results
+        if ( isset( $_GET['stage'] ) && $_GET['stage'] === 'done' ) {
+            $imported = intval( $_GET['imported'] ?? 0 );
+            $skipped  = intval( $_GET['skipped'] ?? 0 );
+            $errors   = intval( $_GET['errors'] ?? 0 );
+            ?>
+            <div class="wrap">
+                <h1>Import Complete</h1>
+                <div class="notice notice-success"><p>
+                    <strong><?php echo $imported; ?></strong> comments imported.
+                    <strong><?php echo $skipped; ?></strong> skipped as duplicates.
+                    <strong><?php echo $errors; ?></strong> rows skipped due to errors.
+                </p></div>
+                <p><a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=obs-comments' ) ); ?>">View All Comments</a></p>
+            </div>
+            <?php
+            return;
+        }
+
+        // Step 1: upload
+        ?>
+        <div class="wrap">
+            <h1>Import from CSV</h1>
+            <p>Upload a CSV file. The first row must be the header. Recommended columns:</p>
+            <ul style="list-style:disc;margin-left:20px;">
+                <li><code>comment_text</code> (required)</li>
+                <li><code>author_name</code></li>
+                <li><code>author_email</code></li>
+                <li><code>source_date</code> (YYYY-MM-DD)</li>
+                <li><code>tags</code> (comma-separated inside the cell)</li>
+                <li><code>notes</code></li>
+            </ul>
+
+            <?php if ( isset( $_GET['msg'] ) && $_GET['msg'] === 'upload_failed' ) : ?>
+                <div class="notice notice-error"><p>Upload failed. Please try again.</p></div>
+            <?php endif; ?>
+
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data" style="margin-top:20px;">
+                <input type="hidden" name="action" value="obs_import">
+                <input type="hidden" name="stage" value="upload">
+                <?php wp_nonce_field( 'obs_import_upload' ); ?>
+                <p>
+                    <input type="file" name="csv_file" accept=".csv,text/csv" required>
+                </p>
+                <p>
+                    <button class="button button-primary">Upload &amp; Preview</button>
+                </p>
+            </form>
+        </div>
+        <?php
+    }
+
+    private function render_import_mapping( $token ) {
+        $file = $this->get_upload_path( $token );
+        if ( ! $file || ! file_exists( $file ) ) {
+            echo '<div class="wrap"><h1>Import</h1><p>File not found. Please re-upload.</p></div>';
+            return;
+        }
+
+        $handle = fopen( $file, 'r' );
+        $header = fgetcsv( $handle );
+        $preview = [];
+        while ( ( $row = fgetcsv( $handle ) ) !== false && count( $preview ) < 3 ) {
+            $preview[] = $row;
+        }
+        fclose( $handle );
+
+        if ( ! $header ) {
+            echo '<div class="wrap"><h1>Import</h1><p>Could not read CSV header.</p></div>';
+            return;
+        }
+
+        $fields = [
+            ''             => '— Skip this column —',
+            'comment_text' => 'Comment Text (required)',
+            'author_name'  => 'Author Name',
+            'author_email' => 'Author Email',
+            'source_date'  => 'Date Received (YYYY-MM-DD)',
+            'tags'         => 'Tags',
+            'notes'        => 'Notes',
+        ];
+
+        // Auto-detect mappings
+        $auto = [];
+        foreach ( $header as $i => $col ) {
+            $key = strtolower( trim( $col ) );
+            $key = str_replace( [ ' ', '-' ], '_', $key );
+            if ( isset( $fields[ $key ] ) ) $auto[ $i ] = $key;
+        }
+        ?>
+        <div class="wrap">
+            <h1>Map Columns</h1>
+            <p>Match each column from your CSV to a field. Required: <strong>Comment Text</strong>.</p>
+
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <input type="hidden" name="action" value="obs_import">
+                <input type="hidden" name="stage" value="process">
+                <input type="hidden" name="token" value="<?php echo esc_attr( $token ); ?>">
+                <?php wp_nonce_field( 'obs_import_process' ); ?>
+
+                <table class="widefat striped" style="max-width:900px;">
+                    <thead>
+                        <tr><th style="width:30%;">CSV Column</th><th style="width:35%;">Maps To</th><th>Sample</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ( $header as $i => $col ) :
+                            $sample = '';
+                            if ( isset( $preview[0][ $i ] ) ) $sample = $preview[0][ $i ];
+                            ?>
+                            <tr>
+                                <td><strong><?php echo esc_html( $col ); ?></strong></td>
+                                <td>
+                                    <select name="map[<?php echo intval( $i ); ?>]" style="min-width:200px;">
+                                        <?php foreach ( $fields as $val => $label ) : ?>
+                                            <option value="<?php echo esc_attr( $val ); ?>" <?php selected( $auto[ $i ] ?? '', $val ); ?>><?php echo esc_html( $label ); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </td>
+                                <td><em><?php echo esc_html( mb_substr( $sample, 0, 80 ) ); ?><?php echo mb_strlen( $sample ) > 80 ? '…' : ''; ?></em></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+
+                <p style="margin-top:15px;">
+                    <label><input type="checkbox" name="skip_duplicates" value="1" checked> Skip rows where the comment text already exists</label>
+                </p>
+
+                <p>
+                    <button class="button button-primary">Import Now</button>
+                    <a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=obs-comments-import' ) ); ?>">Cancel</a>
+                </p>
+            </form>
+        </div>
+        <?php
+    }
+
+    /* ============================================================
+     * ADD / EDIT PAGE  (unchanged from v2.0)
      * ============================================================ */
 
     public function page_edit() {
@@ -311,7 +567,6 @@ class OBS_Comments_Manager {
         $id    = isset( $_GET['id'] ) ? intval( $_GET['id'] ) : 0;
         $row   = $id ? $wpdb->get_row( $wpdb->prepare( "SELECT * FROM $table WHERE id=%d", $id ) ) : null;
 
-        // Duplicate warning
         $duplicate_of = isset( $_GET['duplicate'] ) ? intval( $_GET['duplicate'] ) : 0;
         $dup_url      = $duplicate_of ? admin_url( 'admin.php?page=obs-comments-new&id=' . $duplicate_of ) : '';
         ?>
@@ -406,8 +661,6 @@ class OBS_Comments_Manager {
 
     public function page_tags() {
         $tags = $this->get_all_tags_with_counts();
-
-        // Handle rename/merge result
         if ( isset( $_GET['renamed'] ) ) {
             echo '<div class="notice notice-success is-dismissible"><p>Tag updated.</p></div>';
         }
@@ -459,6 +712,65 @@ class OBS_Comments_Manager {
     }
 
     /* ============================================================
+     * DASHBOARD WIDGET
+     * ============================================================ */
+
+    public function register_dashboard_widget() {
+        if ( ! current_user_can( 'manage_options' ) ) return;
+        wp_add_dashboard_widget(
+            'obs_unused_comments',
+            'OBS — Oldest Unused Comments',
+            [ $this, 'render_dashboard_widget' ]
+        );
+    }
+
+    public function render_dashboard_widget() {
+        global $wpdb;
+        $table = $wpdb->prefix . self::TABLE;
+        $rows  = $wpdb->get_results(
+            "SELECT id, comment_text, author_name, created_at
+             FROM $table
+             WHERE usage_count = 0 AND deleted_at IS NULL
+             ORDER BY created_at ASC
+             LIMIT 5"
+        );
+
+        if ( empty( $rows ) ) {
+            echo '<p><em>No unused comments. Nice work!</em></p>';
+            return;
+        }
+
+        $total_unused = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table WHERE usage_count = 0 AND deleted_at IS NULL" );
+
+        echo '<ul style="margin:0;">';
+        foreach ( $rows as $row ) {
+            $id   = intval( $row->id );
+            $full = $row->comment_text;
+            $trim = wp_trim_words( $full, 15, '…' );
+            $url  = admin_url( 'admin.php?page=obs-comments-new&id=' . $id );
+            ?>
+            <li style="padding:10px 0;border-bottom:1px solid #eee;">
+                <div class="obs-dash-quote"
+                     id="obs-dash-quote-<?php echo $id; ?>"
+                     data-full="<?php echo esc_attr( $full ); ?>"
+                     style="font-style:italic;margin-bottom:4px;">
+                    <?php echo esc_html( $trim ); ?>
+                </div>
+                <div style="font-size:11px;color:#666;">
+                    <?php echo esc_html( $row->author_name ?: 'Anonymous' ); ?>
+                    · <?php echo esc_html( date( 'M j, Y', strtotime( $row->created_at ) ) ); ?>
+                    · <a href="#" class="obs-copy" data-target="obs-dash-quote-<?php echo $id; ?>">Copy</a>
+                    · <a href="<?php echo esc_url( $url ); ?>">Edit</a>
+                </div>
+            </li>
+            <?php
+        }
+        echo '</ul>';
+
+        echo '<p style="margin-top:10px;"><a class="button button-small" href="' . esc_url( admin_url( 'admin.php?page=obs-comments&unused=1' ) ) . '">View all ' . $total_unused . ' unused →</a></p>';
+    }
+
+    /* ============================================================
      * HANDLERS
      * ============================================================ */
 
@@ -473,10 +785,9 @@ class OBS_Comments_Manager {
 
         $comment_text = wp_kses_post( wp_unslash( $_POST['comment_text'] ) );
 
-        // Duplicate detection (only on new comments, unless forced)
         if ( ! $id && ! $force ) {
             $existing = $wpdb->get_var( $wpdb->prepare(
-                "SELECT id FROM $table WHERE comment_text = %s LIMIT 1",
+                "SELECT id FROM $table WHERE comment_text = %s AND deleted_at IS NULL LIMIT 1",
                 $comment_text
             ) );
             if ( $existing ) {
@@ -512,15 +823,59 @@ class OBS_Comments_Manager {
         exit;
     }
 
+    /** Now: move to trash */
     public function handle_delete() {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
         $id = intval( $_GET['id'] ?? 0 );
         check_admin_referer( 'obs_delete_' . $id );
 
         global $wpdb;
+        $wpdb->update(
+            $wpdb->prefix . self::TABLE,
+            [ 'deleted_at' => current_time( 'mysql' ) ],
+            [ 'id' => $id ]
+        );
+
+        wp_safe_redirect( admin_url( 'admin.php?page=obs-comments&msg=trashed' ) );
+        exit;
+    }
+
+    public function handle_restore() {
+        if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+        $id = intval( $_GET['id'] ?? 0 );
+        check_admin_referer( 'obs_restore_' . $id );
+
+        global $wpdb;
+        $wpdb->update(
+            $wpdb->prefix . self::TABLE,
+            [ 'deleted_at' => null ],
+            [ 'id' => $id ]
+        );
+
+        wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-trash&msg=restored' ) );
+        exit;
+    }
+
+    public function handle_purge() {
+        if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+        $id = intval( $_GET['id'] ?? 0 );
+        check_admin_referer( 'obs_purge_' . $id );
+
+        global $wpdb;
         $wpdb->delete( $wpdb->prefix . self::TABLE, [ 'id' => $id ] );
 
-        wp_safe_redirect( admin_url( 'admin.php?page=obs-comments&msg=deleted' ) );
+        wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-trash&msg=purged' ) );
+        exit;
+    }
+
+    public function handle_empty_trash() {
+        if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+        check_admin_referer( 'obs_empty_trash' );
+
+        global $wpdb;
+        $wpdb->query( "DELETE FROM " . $wpdb->prefix . self::TABLE . " WHERE deleted_at IS NOT NULL" );
+
+        wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-trash&msg=emptied' ) );
         exit;
     }
 
@@ -557,7 +912,7 @@ class OBS_Comments_Manager {
 
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
-        $rows  = $wpdb->get_results( "SELECT * FROM $table ORDER BY id DESC", ARRAY_A );
+        $rows  = $wpdb->get_results( "SELECT * FROM $table WHERE deleted_at IS NULL ORDER BY id DESC", ARRAY_A );
 
         header( 'Content-Type: text/csv' );
         header( 'Content-Disposition: attachment; filename="obs-comments-' . date( 'Y-m-d' ) . '.csv"' );
@@ -573,8 +928,6 @@ class OBS_Comments_Manager {
         fclose( $out );
         exit;
     }
-
-    /* -------- BULK ACTIONS -------- */
 
     public function handle_bulk() {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
@@ -599,8 +952,8 @@ class OBS_Comments_Manager {
 
             switch ( $action ) {
 
-                case 'delete':
-                    $wpdb->delete( $table, [ 'id' => $id ] );
+                case 'trash':
+                    $wpdb->update( $table, [ 'deleted_at' => current_time( 'mysql' ) ], [ 'id' => $id ] );
                     break;
 
                 case 'add_tag':
@@ -642,8 +995,6 @@ class OBS_Comments_Manager {
         exit;
     }
 
-    /* -------- TAG RENAME / MERGE -------- */
-
     public function handle_rename_tag() {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
         check_admin_referer( 'obs_rename_tag' );
@@ -676,21 +1027,177 @@ class OBS_Comments_Manager {
         exit;
     }
 
+    /* -------- IMPORT -------- */
+
+    public function handle_import() {
+        if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+
+        $stage = sanitize_text_field( $_POST['stage'] ?? '' );
+
+        if ( $stage === 'upload' ) {
+            check_admin_referer( 'obs_import_upload' );
+
+            if ( empty( $_FILES['csv_file']['tmp_name'] ) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK ) {
+                wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-import&msg=upload_failed' ) );
+                exit;
+            }
+
+            $token = wp_generate_password( 20, false, false );
+            $dir   = $this->get_upload_dir();
+            $dest  = $dir . '/' . $token . '.csv';
+
+            if ( ! move_uploaded_file( $_FILES['csv_file']['tmp_name'], $dest ) ) {
+                wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-import&msg=upload_failed' ) );
+                exit;
+            }
+
+            wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-import&stage=map&token=' . $token ) );
+            exit;
+        }
+
+        if ( $stage === 'process' ) {
+            check_admin_referer( 'obs_import_process' );
+
+            $token = sanitize_text_field( $_POST['token'] ?? '' );
+            $map   = isset( $_POST['map'] ) && is_array( $_POST['map'] ) ? array_map( 'sanitize_text_field', $_POST['map'] ) : [];
+            $skip_dupes = ! empty( $_POST['skip_duplicates'] );
+
+            $file = $this->get_upload_path( $token );
+            if ( ! $file || ! file_exists( $file ) ) {
+                wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-import&msg=upload_failed' ) );
+                exit;
+            }
+
+            $result = $this->process_import( $file, $map, $skip_dupes );
+            @unlink( $file );
+
+            wp_safe_redirect( add_query_arg( [
+                'page'     => 'obs-comments-import',
+                'stage'    => 'done',
+                'imported' => $result['imported'],
+                'skipped'  => $result['skipped'],
+                'errors'   => $result['errors'],
+            ], admin_url( 'admin.php' ) ) );
+            exit;
+        }
+
+        wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-import' ) );
+        exit;
+    }
+
+    private function process_import( $file, $map, $skip_dupes ) {
+        global $wpdb;
+        $table = $wpdb->prefix . self::TABLE;
+
+        $handle = fopen( $file, 'r' );
+        if ( ! $handle ) return [ 'imported' => 0, 'skipped' => 0, 'errors' => 1 ];
+
+        $header    = fgetcsv( $handle );
+        $imported  = 0;
+        $skipped   = 0;
+        $errors    = 0;
+
+        // Find index of comment_text mapping
+        $comment_index = array_search( 'comment_text', $map, true );
+        if ( $comment_index === false ) {
+            fclose( $handle );
+            return [ 'imported' => 0, 'skipped' => 0, 'errors' => 1 ];
+        }
+
+        while ( ( $row = fgetcsv( $handle ) ) !== false ) {
+            $data = [
+                'comment_text' => '',
+                'author_name'  => '',
+                'author_email' => '',
+                'source_date'  => null,
+                'tags'         => '',
+                'notes'        => '',
+            ];
+
+            foreach ( $map as $col_index => $field ) {
+                if ( ! $field || ! isset( $row[ $col_index ] ) ) continue;
+                $value = trim( $row[ $col_index ] );
+
+                if ( $field === 'comment_text' ) {
+                    $data['comment_text'] = wp_kses_post( $value );
+                } elseif ( $field === 'author_email' ) {
+                    $data['author_email'] = sanitize_email( $value );
+                } elseif ( $field === 'source_date' ) {
+                    $ts = strtotime( $value );
+                    $data['source_date'] = $ts ? date( 'Y-m-d', $ts ) : null;
+                } elseif ( $field === 'tags' ) {
+                    $data['tags'] = $this->normalize_tags( $value );
+                } elseif ( $field === 'notes' ) {
+                    $data['notes'] = sanitize_textarea_field( $value );
+                } elseif ( $field === 'author_name' ) {
+                    $data['author_name'] = sanitize_text_field( $value );
+                }
+            }
+
+            if ( empty( $data['comment_text'] ) ) {
+                $errors++;
+                continue;
+            }
+
+            if ( $skip_dupes ) {
+                $exists = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT id FROM $table WHERE comment_text = %s AND deleted_at IS NULL LIMIT 1",
+                    $data['comment_text']
+                ) );
+                if ( $exists ) {
+                    $skipped++;
+                    continue;
+                }
+            }
+
+            $data['created_at'] = current_time( 'mysql' );
+            $data['updated_at'] = current_time( 'mysql' );
+            $ok = $wpdb->insert( $table, $data );
+            if ( $ok ) $imported++;
+            else $errors++;
+        }
+
+        fclose( $handle );
+        return compact( 'imported', 'skipped', 'errors' );
+    }
+
+    private function get_upload_dir() {
+        $dir = wp_upload_dir()['basedir'] . '/obs-imports';
+        if ( ! file_exists( $dir ) ) wp_mkdir_p( $dir );
+        // Protect directory
+        $htaccess = $dir . '/.htaccess';
+        if ( ! file_exists( $htaccess ) ) file_put_contents( $htaccess, "Deny from all\n" );
+        $index = $dir . '/index.html';
+        if ( ! file_exists( $index ) ) file_put_contents( $index, '' );
+        return $dir;
+    }
+
+    private function get_upload_path( $token ) {
+        $token = preg_replace( '/[^A-Za-z0-9]/', '', $token );
+        if ( ! $token ) return '';
+        return $this->get_upload_dir() . '/' . $token . '.csv';
+    }
+
     /* ============================================================
      * HELPERS
      * ============================================================ */
 
+    private function get_trash_count() {
+        global $wpdb;
+        return (int) $wpdb->get_var( "SELECT COUNT(*) FROM " . $wpdb->prefix . self::TABLE . " WHERE deleted_at IS NOT NULL" );
+    }
+
     private function normalize_tags( $raw ) {
         $parts = array_filter( array_map( 'trim', explode( ',', $raw ) ) );
         $parts = array_unique( array_map( 'sanitize_text_field', $parts ) );
-        $parts = array_filter( $parts ); // remove empties
+        $parts = array_filter( $parts );
         return implode( ',', $parts );
     }
 
     private function get_all_tags() {
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
-        $rows  = $wpdb->get_col( "SELECT tags FROM $table WHERE tags != ''" );
+        $rows  = $wpdb->get_col( "SELECT tags FROM $table WHERE tags != '' AND deleted_at IS NULL" );
         $tags  = [];
         foreach ( $rows as $r ) {
             foreach ( explode( ',', $r ) as $t ) {
@@ -706,7 +1213,7 @@ class OBS_Comments_Manager {
     private function get_all_tags_with_counts() {
         global $wpdb;
         $table  = $wpdb->prefix . self::TABLE;
-        $rows   = $wpdb->get_col( "SELECT tags FROM $table WHERE tags != ''" );
+        $rows   = $wpdb->get_col( "SELECT tags FROM $table WHERE tags != '' AND deleted_at IS NULL" );
         $counts = [];
         foreach ( $rows as $r ) {
             foreach ( explode( ',', $r ) as $t ) {
@@ -722,7 +1229,10 @@ class OBS_Comments_Manager {
         return [
             'saved'      => 'Comment saved.',
             'saved_new'  => 'Comment saved. Add another below.',
-            'deleted'    => 'Comment deleted.',
+            'trashed'    => 'Comment moved to trash.',
+            'restored'   => 'Comment restored.',
+            'purged'     => 'Comment permanently deleted.',
+            'emptied'    => 'Trash emptied.',
             'logged'     => 'Usage logged.',
             'bulk_done'  => 'Bulk action applied.',
             'bulk_none'  => 'No comments selected.',
