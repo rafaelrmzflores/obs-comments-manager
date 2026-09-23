@@ -1,5 +1,5 @@
 jQuery(function ($) {
-  /* ---------- Copy with fallback (Improvement #1) ---------- */
+  /* ---------- Copy with fallback ---------- */
   function copyText(text, $btn) {
     function success() {
       var orig = $btn.text();
@@ -42,7 +42,7 @@ jQuery(function ($) {
     copyText(full, $(this));
   });
 
-  /* ---------- View Full toggle (Improvement #2) ---------- */
+  /* ---------- View Full toggle ---------- */
   $(document).on("click", ".obs-toggle", function (e) {
     e.preventDefault();
     var $q = $("#" + $(this).data("target"));
@@ -58,13 +58,91 @@ jQuery(function ($) {
     }
   });
 
-  /* ---------- Log Use modal ---------- */
+  /* ---------- Usage modal: open for new ---------- */
   $(document).on("click", ".obs-use", function (e) {
     e.preventDefault();
-    $("#obs-use-id").val($(this).data("id"));
+    var commentId = $(this).data("id");
+    var place = $(this).data("place") || "";
+
+    // Reset form
+    $("#obs-use-modal-title").text("Log Usage");
+    $('#obs-usage-form input[name="action"]').val("obs_log_usage");
+    $("#obs-use-comment-id").val(commentId);
+    $("#obs-use-usage-id").val("");
+
+    // Reset place dropdown
+    $("#obs-place-existing").val("__new__");
+    $("#obs-place-new").val("").closest("#obs-new-place-fields").show();
+
+    // Reset date to today
+    $("#obs-month").val(new Date().getMonth() + 1);
+    $("#obs-year").val(new Date().getFullYear());
+
+    // Clear recipients + note
+    $('#obs-usage-form input[name="recipients[]"]').prop("checked", false);
+    $("#obs-usage-note").val("");
+
     $("#obs-use-modal").show();
-    $('#obs-use-modal input[name="usage_where"]').focus();
+    $("#obs-place-existing").focus();
   });
+
+  /* ---------- Usage modal: open for edit ---------- */
+  $(document).on("click", ".obs-edit-usage", function (e) {
+    e.preventDefault();
+    var $btn = $(this);
+
+    $("#obs-use-modal-title").text("Edit Usage Entry");
+    $('#obs-usage-form input[name="action"]').val("obs_update_usage");
+    $("#obs-use-comment-id").val($btn.data("comment-id"));
+    $("#obs-use-usage-id").val($btn.data("usage-id"));
+
+    // Place: if it's in the dropdown, select it; otherwise prefill "new"
+    var place = $btn.data("place");
+    if (
+      $(
+        '#obs-place-existing option[value="' +
+          place.replace(/"/g, '\\"') +
+          '"]',
+      ).length
+    ) {
+      $("#obs-place-existing").val(place);
+      $("#obs-place-new").val("");
+    } else {
+      $("#obs-place-existing").val("__new__");
+      $("#obs-place-new").val(place);
+    }
+
+    $("#obs-month").val($btn.data("month") || "");
+    $("#obs-year").val($btn.data("year") || new Date().getFullYear());
+
+    // Recipients checkboxes
+    var recs = String($btn.data("recipients") || "")
+      .split(",")
+      .map(function (s) {
+        return s.trim();
+      })
+      .filter(Boolean);
+    $('#obs-usage-form input[name="recipients[]"]').each(function () {
+      $(this).prop("checked", recs.indexOf($(this).val()) !== -1);
+    });
+
+    $("#obs-usage-note").val($btn.data("note") || "");
+
+    $("#obs-use-modal").show();
+  });
+
+  /* ---------- Modal: show/hide "new place" fields ---------- */
+  $(document).on("change", "#obs-place-existing", function () {
+    if ($(this).val() === "__new__") {
+      $("#obs-new-place-fields").show();
+      $("#obs-place-new").focus();
+    } else {
+      $("#obs-new-place-fields").hide();
+      $("#obs-place-new").val("");
+    }
+  });
+
+  /* ---------- Modal: close ---------- */
   $(document).on("click", ".obs-modal-close", function (e) {
     e.preventDefault();
     $("#obs-use-modal").hide();
@@ -73,7 +151,14 @@ jQuery(function ($) {
     if (e.key === "Escape") $("#obs-use-modal").hide();
   });
 
-  /* ---------- Click existing tag to append ---------- */
+  /* ---------- Inline usage detail toggle on list ---------- */
+  $(document).on("click", ".obs-show-usage", function (e) {
+    e.preventDefault();
+    var id = $(this).data("comment");
+    $("#obs-usage-row-" + id).toggle();
+  });
+
+  /* ---------- Existing tag append ---------- */
   $(document).on("click", ".obs-add-tag", function (e) {
     e.preventDefault();
     var tag = $(this).data("tag");
@@ -91,12 +176,10 @@ jQuery(function ($) {
     }
   });
 
-  /* ---------- Keyboard-first entry (Improvement #7) ---------- */
-  // Ctrl/Cmd + Enter saves from anywhere in the form
+  /* ---------- Keyboard-first entry ---------- */
   $("#obs-edit-form").on("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
-      // Submit as primary save (not "Save & Add Another")
       $("#obs-edit-form").find('input[name="save_and_new"]').remove();
       $("#obs-edit-form").submit();
     }
@@ -106,15 +189,14 @@ jQuery(function ($) {
   $("#obs-bulk-action").on("change", function () {
     var v = $(this).val();
     $("#obs-bulk-tag").toggle(v === "add_tag" || v === "remove_tag");
-    $("#obs-bulk-where").toggle(v === "mark_used");
   });
 
-  /* ---------- Select-all checkbox ---------- */
+  /* ---------- Select-all ---------- */
   $("#obs-select-all").on("change", function () {
     $('input[name="ids[]"]').prop("checked", $(this).prop("checked"));
   });
 
-  /* ---------- Duplicate "save anyway" link ---------- */
+  /* ---------- Duplicate "save anyway" ---------- */
   $("#obs-force-save").on("click", function (e) {
     e.preventDefault();
     $("#obs-force").val("1");
