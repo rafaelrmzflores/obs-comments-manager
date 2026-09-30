@@ -1,10 +1,19 @@
 jQuery(function ($) {
   function initReview(root) {
-    var $root = $(root);
-    var mode = $root.data("mode");
-    var $data = $root.find(".obs-review-data");
-    var comments = JSON.parse($data.text() || "[]");
-    if (!comments.length) return;
+   var $root   = $(root);
+  var mode    = $root.data('mode');
+
+  // Two ways data can arrive:
+  //   1. Front-end shortcode: inline JSON block inside the wrapper
+  //   2. Admin page: wp_localize_script payload (obsReview.comments)
+  var comments = [];
+  if (typeof obsReview !== 'undefined' && Array.isArray(obsReview.comments)) {
+      comments = obsReview.comments;
+  } else {
+      var $data = $root.find('.obs-review-data');
+      try { comments = JSON.parse($data.text() || '[]'); } catch (e) { comments = []; }
+  }
+  if (!comments.length) return;
 
     var idx = 0;
 
@@ -43,6 +52,11 @@ jQuery(function ($) {
       if ($logWrap.length) {
         $logWrap.show();
         $root.find(".obs-review-log-msg").text("");
+      }
+      // Update the "Edit in admin" link if present
+      var $editLink = $root.find('#obs-review-edit-link');
+      if ($editLink.length && typeof obsReview !== 'undefined' && obsReview.editUrlBase) {
+          $editLink.attr('href', obsReview.editUrlBase + c.id);
       }
     }
 

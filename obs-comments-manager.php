@@ -13,6 +13,8 @@ require_once plugin_dir_path( __FILE__ ) . 'obs-rotator.php';
 require_once plugin_dir_path( __FILE__ ) . 'obs-recipients.php';
 require_once plugin_dir_path( __FILE__ ) . 'obs-places.php';
 require_once plugin_dir_path( __FILE__ ) . 'obs-review.php';
+require_once plugin_dir_path( __FILE__ ) . 'obs-admin-review.php';
+
 
 class OBS_Comments_Manager {
 
@@ -139,7 +141,7 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     public function admin_menu() {
-        require_once plugin_dir_path( __FILE__ ) . 'obs-places.php';
+        
         add_menu_page(
             'OBS Comments', 'OBS Comments', 'manage_options',
             'obs-comments', [ $this, 'page_list' ], 'dashicons-format-quote', 25
@@ -148,28 +150,47 @@ class OBS_Comments_Manager {
         add_submenu_page( 'obs-comments', 'Import from CSV', 'Import CSV', 'manage_options', 'obs-comments-import', [ $this, 'page_import' ] );
         add_submenu_page( 'obs-comments', 'Manage Tags', 'Tags', 'manage_options', 'obs-comments-tags', [ $this, 'page_tags' ] );
         add_submenu_page( 'obs-comments', 'Recipient Groups', 'Recipients', 'manage_options', 'obs-comments-recipients', [ $this, 'page_recipients' ] );
+        
 
         $places = new OBS_Places();
+        
+
         add_submenu_page(
             'obs-comments', 'Manage Places', 'Places', 'manage_options',
             'obs-comments-places', [ $places, 'page' ]
         );
         
+        $page = new OBS_Admin_Review();
+
+        add_submenu_page(
+            'obs-comments',
+            'Review Comments',
+            'Review',
+            'manage_options',
+            'obs-comments-review',
+            [ $page, 'page' ]
+        );
 
         $trash_count = $this->get_trash_count();
         $trash_label = $trash_count
             ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>'
             : 'Trash';
         add_submenu_page( 'obs-comments', 'Trash', $trash_label, 'manage_options', 'obs-comments-trash', [ $this, 'page_trash' ] );
+
+        add_submenu_page(
+            'obs-comments', 'Export', 'Export', 'manage_options',
+            'obs-comments-export', [ $this, 'page_export' ]
+        );
     }
 
     public function admin_assets( $hook ) {
         if ( strpos( $hook, 'obs-comments' ) === false && $hook !== 'index.php' ) return;
+        $admin_js = plugin_dir_path( __FILE__ ) . 'obs-admin.js';
         wp_enqueue_script(
             'obs-admin',
             plugin_dir_url( __FILE__ ) . 'obs-admin.js',
             [ 'jquery' ],
-            '2.3.0',
+            file_exists( $admin_js ) ? filemtime( $admin_js ) : '2.4.0',
             true
         );
         wp_localize_script( 'obs-admin', 'obsData', [
@@ -253,7 +274,22 @@ class OBS_Comments_Manager {
             <h1 class="wp-heading-inline">OBS Comments</h1>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=obs-comments-new' ) ); ?>" class="page-title-action">Add New</a>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=obs-comments-import' ) ); ?>" class="page-title-action">Import CSV</a>
-            <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=obs_export_csv' ), 'obs_export' ) ); ?>" class="page-title-action">Export CSV</a>
+            <?php
+            // Preserve current filters in the export link
+            $export_args = array_filter( [
+                'action'  => 'obs_export_csv',
+                's'       => $search ?: null,
+                'tag'     => $tag ?: null,
+                'country' => $country ?: null,
+                'unused'  => $unused ? 1 : null,
+                'featured'=> ! empty( $_GET['featured'] ) ? 1 : null,
+            ] );
+            $export_url = wp_nonce_url(
+                add_query_arg( $export_args, admin_url( 'admin-post.php' ) ),
+                'obs_export'
+            );
+            ?>
+            <a href="<?php echo esc_url( $export_url ); ?>" class="page-title-action">Export CSV</a>
             <hr class="wp-header-end">
 
             <?php if ( isset( $_GET['msg'] ) ) : ?>
@@ -335,7 +371,7 @@ class OBS_Comments_Manager {
                     </thead>
                     <tbody>
                         <?php if ( empty( $rows ) ) : ?>
-                            <tr><td colspan="9">No comments found.</td></tr>
+                            <tr><td colspan="10">No comments found.</td></tr>
                         <?php else : foreach ( $rows as $row ) :
                             $full = $row->comment_text;
                             $trim = wp_trim_words( $full, 30, '…' );
@@ -1334,7 +1370,7 @@ class OBS_Comments_Manager {
             'author_name'  => sanitize_text_field( wp_unslash( $_POST['author_name'] ?? '' ) ),
             'author_email' => sanitize_email(  wp_unslash( $_POST['author_email'] ?? '' ) ),
             'country'      => $country,
-            'source_date'  => ! empty( $_POST['source_date'] ) ? sanitize_text_field( $_POST['source_date'] ) : null,
+            'source_date'  => ! empty( $_POST['source_date'] ) ? sanitize_text_field( wp_unslash( $_POST['source_date'] ) ): null,
             'tags'         => $this->normalize_tags( wp_unslash( $_POST['tags'] ?? '' ) ),
             'notes'        => sanitize_textarea_field( wp_unslash( $_POST['notes'] ?? '' ) ),
             'featured'     => ! empty( $_POST['featured'] ) ? 1 : 0,   // NEW
@@ -1422,33 +1458,110 @@ class OBS_Comments_Manager {
 
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
-        $rows  = $wpdb->get_results( "SELECT * FROM $table WHERE deleted_at IS NULL ORDER BY id DESC", ARRAY_A );
 
-        header( 'Content-Type: text/csv' );
-        header( 'Content-Disposition: attachment; filename="obs-comments-' . date( 'Y-m-d' ) . '.csv"' );
-        $out = fopen( 'php://output', 'w' );
-        fputcsv( $out, [ 'ID', 'Comment', 'Author', 'Email', 'Country', 'Country Name', 'Date Received', 'Tags', 'Usage Count', 'Where Used', 'Notes', 'Added', 'Featured' ] );
+        // ---- Read filters from POST or GET ----
+        $input = ! empty( $_POST ) ? $_POST : $_GET;
 
-        foreach ( $rows as $r ) {
-            // Flatten structured usage entries into a readable string
-            $entries = $this->get_usage_entries( $r['id'] );
-            $lines   = [];
-            foreach ( $entries as $e ) {
-                $parts = [ $e->place_name ];
-                $date  = $this->format_usage_date( $e->month, $e->year );
-                if ( $date !== '—' ) $parts[] = $date;
-                if ( $e->recipients ) $parts[] = '(' . $e->recipients . ')';
-                $lines[] = implode( ' — ', $parts );
+        $search        = isset( $input['s'] )       ? sanitize_text_field( wp_unslash( $input['s'] ) )     : '';
+        $tag           = isset( $input['tag'] )     ? sanitize_text_field( wp_unslash( $input['tag'] ) )   : '';
+        $country       = isset( $input['country'] ) ? strtoupper( sanitize_text_field( wp_unslash( $input['country'] ) ) ) : '';
+        $scope         = isset( $input['scope'] )   ? sanitize_key( $input['scope'] )                      : '';
+        $unused        = ! empty( $input['unused'] )   || $scope === 'unused';
+        $featured      = ! empty( $input['featured'] ) || $scope === 'featured';
+        $include_usage = ! isset( $input['include_usage'] ) || ! empty( $input['include_usage'] );
+        $include_notes = ! isset( $input['include_notes'] ) || ! empty( $input['include_notes'] );
+
+        // ---- Build WHERE clause ----
+        $where  = 'WHERE deleted_at IS NULL';
+        $params = [];
+
+        if ( $search ) {
+            if ( ctype_digit( $search ) ) {
+                $like     = '%' . $wpdb->esc_like( $search ) . '%';
+                $where   .= ' AND (id = %d OR comment_text LIKE %s OR author_name LIKE %s OR notes LIKE %s)';
+                $params[] = (int) $search;
+                $params[] = $like; $params[] = $like; $params[] = $like;
+            } else {
+                $like     = '%' . $wpdb->esc_like( $search ) . '%';
+                $where   .= ' AND (comment_text LIKE %s OR author_name LIKE %s OR notes LIKE %s)';
+                $params[] = $like; $params[] = $like; $params[] = $like;
             }
-            $where_used = implode( ' | ', $lines );
-
-            fputcsv( $out, [
-                $r['id'], $r['comment_text'], $r['author_name'], $r['author_email'],
-                $r['country'], obs_country_name( $r['country'] ),
-                $r['source_date'], $r['tags'], $r['usage_count'],
-                $where_used, $r['notes'], $r['created_at'], $r['featured'],
-            ] );
         }
+        if ( $tag ) {
+            $where   .= ' AND FIND_IN_SET(%s, tags)';
+            $params[] = $tag;
+        }
+        if ( $country ) {
+            $where   .= ' AND country = %s';
+            $params[] = $country;
+        }
+        if ( $unused ) {
+            $where .= ' AND usage_count = 0';
+        }
+        if ( $featured ) {
+            $where .= ' AND featured = 1';
+        }
+
+        $sql  = "SELECT * FROM $table $where ORDER BY source_date DESC, created_at DESC";
+        $rows = $params
+            ? $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A )
+            : $wpdb->get_results( $sql, ARRAY_A );
+
+        // ---- Build filename suffix from active filters ----
+        $suffix = '';
+        if ( $tag )      $suffix .= '-' . sanitize_title( $tag );
+        if ( $country )  $suffix .= '-' . strtolower( $country );
+        if ( $featured ) $suffix .= '-featured';
+        if ( $unused )   $suffix .= '-unused';
+
+        // ---- Send headers ----
+        header( 'Content-Type: text/csv' );
+        header( 'Content-Disposition: attachment; filename="obs-comments' . $suffix . '-' . date( 'Y-m-d' ) . '.csv"' );
+
+        $out = fopen( 'php://output', 'w' );
+
+        // ---- Write header row (respecting include flags) ----
+        $header = [ 'ID', 'Comment', 'Author', 'Email', 'Country', 'Country Name', 'Date Received', 'Tags', 'Usage Count' ];
+        if ( $include_usage ) $header[] = 'Where Used';
+        if ( $include_notes ) $header[] = 'Notes';
+        $header[] = 'Added';
+        $header[] = 'Featured';
+        fputcsv( $out, $header );
+
+        // ---- Write data rows ----
+        foreach ( $rows as $r ) {
+            $row = [
+                $r['id'],
+                $r['comment_text'],
+                $r['author_name'],
+                $r['author_email'],
+                $r['country'],
+                obs_country_name( $r['country'] ),
+                $r['source_date'],
+                $r['tags'],
+                $r['usage_count'],
+            ];
+
+            if ( $include_usage ) {
+                $entries = $this->get_usage_entries( $r['id'] );
+                $lines   = [];
+                foreach ( $entries as $e ) {
+                    $parts = [ $e->place_name ];
+                    $date  = $this->format_usage_date( $e->month, $e->year );
+                    if ( $date !== '—' ) $parts[] = $date;
+                    if ( $e->recipients ) $parts[] = '(' . $e->recipients . ')';
+                    $lines[] = implode( ' — ', $parts );
+                }
+                $row[] = implode( ' | ', $lines );
+            }
+
+            if ( $include_notes ) $row[] = $r['notes'];
+            $row[] = $r['created_at'];
+            $row[] = $r['featured'];
+
+            fputcsv( $out, $row );
+        }
+
         fclose( $out );
         exit;
     }
@@ -1500,19 +1613,19 @@ class OBS_Comments_Manager {
                     ], [ 'id' => $id ] );
                     break;
                 
-                    case 'feature':
-                        $wpdb->update( $table, [
-                            'featured'   => 1,
-                            'updated_at' => current_time( 'mysql' ),
-                        ], [ 'id' => $id ] );
-                        break;
+                case 'feature':
+                    $wpdb->update( $table, [
+                        'featured'   => 1,
+                        'updated_at' => current_time( 'mysql' ),
+                    ], [ 'id' => $id ] );
+                    break;
 
-                    case 'unfeature':
-                        $wpdb->update( $table, [
-                            'featured'   => 0,
-                            'updated_at' => current_time( 'mysql' ),
-                        ], [ 'id' => $id ] );
-                        break;
+                case 'unfeature':
+                    $wpdb->update( $table, [
+                        'featured'   => 0,
+                        'updated_at' => current_time( 'mysql' ),
+                    ], [ 'id' => $id ] );
+                    break;
             }
         }
 
@@ -1791,6 +1904,75 @@ class OBS_Comments_Manager {
 
         wp_safe_redirect( wp_get_referer() ?: admin_url( 'admin.php?page=obs-comments' ) );
         exit;
+    }
+
+    public function page_export() {
+        if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+
+        global $wpdb;
+        $table = $wpdb->prefix . self::TABLE;
+
+        $total    = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table WHERE deleted_at IS NULL" );
+        $featured = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table WHERE deleted_at IS NULL AND featured = 1" );
+        $unused   = (int) $wpdb->get_var( "SELECT COUNT(*) FROM $table WHERE deleted_at IS NULL AND usage_count = 0" );
+
+        $all_tags      = $this->get_all_tags();
+        $all_countries = $this->get_countries_in_use();
+        ?>
+        <div class="wrap">
+            <h1>Export Comments</h1>
+            <p>Download your comments and usage history as a CSV file for backup, analysis, or migration.</p>
+
+            <div class="card" style="max-width:720px;padding:20px;">
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                    <input type="hidden" name="action" value="obs_export_csv">
+                    <?php wp_nonce_field( 'obs_export' ); ?>
+
+                    <table class="form-table">
+                        <tr>
+                            <th><label>Scope</label></th>
+                            <td>
+                                <label><input type="radio" name="scope" value="all" checked> All comments (<?php echo $total; ?>)</label><br>
+                                <label><input type="radio" name="scope" value="featured"> Featured only (<?php echo $featured; ?>)</label><br>
+                                <label><input type="radio" name="scope" value="unused"> Never used (<?php echo $unused; ?>)</label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="exp_tag">Filter by tag</label></th>
+                            <td>
+                                <select name="tag" id="exp_tag">
+                                    <option value="">Any tag</option>
+                                    <?php foreach ( $all_tags as $t ) : ?>
+                                        <option value="<?php echo esc_attr( $t ); ?>"><?php echo esc_html( $t ); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="exp_country">Filter by country</label></th>
+                            <td>
+                                <select name="country" id="exp_country">
+                                    <option value="">Any country</option>
+                                    <?php foreach ( $all_countries as $c ) : ?>
+                                        <option value="<?php echo esc_attr( $c ); ?>"><?php echo esc_html( obs_country_name( $c ) ); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>Include</th>
+                            <td>
+                                <label><input type="checkbox" name="include_usage" value="1" checked> Usage history column</label><br>
+                                <label><input type="checkbox" name="include_notes" value="1" checked> Internal notes column</label>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <p><button class="button button-primary">Download CSV</button></p>
+                </form>
+            </div>
+        </div>
+        <?php
     }
 }
 
