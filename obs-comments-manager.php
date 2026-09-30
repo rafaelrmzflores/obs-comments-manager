@@ -9,6 +9,7 @@
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 require_once plugin_dir_path( __FILE__ ) . 'obs-countries.php';
+require_once plugin_dir_path( __FILE__ ) . 'obs-rotator.php';
 require_once plugin_dir_path( __FILE__ ) . 'obs-recipients.php';
 
 class OBS_Comments_Manager {
