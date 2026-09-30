@@ -11,6 +11,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 require_once plugin_dir_path( __FILE__ ) . 'obs-countries.php';
 require_once plugin_dir_path( __FILE__ ) . 'obs-rotator.php';
 require_once plugin_dir_path( __FILE__ ) . 'obs-recipients.php';
+require_once plugin_dir_path( __FILE__ ) . 'obs-places.php';
+require_once plugin_dir_path( __FILE__ ) . 'obs-review.php';
 
 class OBS_Comments_Manager {
 
@@ -137,6 +139,7 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     public function admin_menu() {
+        require_once plugin_dir_path( __FILE__ ) . 'obs-places.php';
         add_menu_page(
             'OBS Comments', 'OBS Comments', 'manage_options',
             'obs-comments', [ $this, 'page_list' ], 'dashicons-format-quote', 25
@@ -145,6 +148,13 @@ class OBS_Comments_Manager {
         add_submenu_page( 'obs-comments', 'Import from CSV', 'Import CSV', 'manage_options', 'obs-comments-import', [ $this, 'page_import' ] );
         add_submenu_page( 'obs-comments', 'Manage Tags', 'Tags', 'manage_options', 'obs-comments-tags', [ $this, 'page_tags' ] );
         add_submenu_page( 'obs-comments', 'Recipient Groups', 'Recipients', 'manage_options', 'obs-comments-recipients', [ $this, 'page_recipients' ] );
+
+        $places = new OBS_Places();
+        add_submenu_page(
+            'obs-comments', 'Manage Places', 'Places', 'manage_options',
+            'obs-comments-places', [ $places, 'page' ]
+        );
+        
 
         $trash_count = $this->get_trash_count();
         $trash_label = $trash_count
@@ -197,9 +207,17 @@ class OBS_Comments_Manager {
         $params = [];
 
         if ( $search ) {
-            $like     = '%' . $wpdb->esc_like( $search ) . '%';
-            $where   .= ' AND (comment_text LIKE %s OR author_name LIKE %s OR notes LIKE %s)';
-            $params[] = $like; $params[] = $like; $params[] = $like;
+            if ( ctype_digit( $search ) ) {
+                // Pure numeric — match ID exactly, plus the usual text fields
+                $like     = '%' . $wpdb->esc_like( $search ) . '%';
+                $where   .= ' AND (id = %d OR comment_text LIKE %s OR author_name LIKE %s OR notes LIKE %s)';
+                $params[] = (int) $search;
+                $params[] = $like; $params[] = $like; $params[] = $like;
+            } else {
+                $like     = '%' . $wpdb->esc_like( $search ) . '%';
+                $where   .= ' AND (comment_text LIKE %s OR author_name LIKE %s OR notes LIKE %s)';
+                $params[] = $like; $params[] = $like; $params[] = $like;
+            }
         }
         if ( $tag ) {
             $where   .= ' AND FIND_IN_SET(%s, tags)';
@@ -244,7 +262,8 @@ class OBS_Comments_Manager {
 
             <form method="get" style="margin:15px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <input type="hidden" name="page" value="obs-comments">
-                <input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="Search comments..." style="min-width:220px;">
+                <!-- <input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="Search comments..." style="min-width:220px;"> -->
+                <input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="Search comments, authors, or ID..." style="min-width:220px;">
                 <select name="tag">
                     <option value="">All tags</option>
                     <?php foreach ( $all_tags as $t ) : ?>
@@ -850,13 +869,19 @@ class OBS_Comments_Manager {
 
     /** Read + sanitize the usage form. Returns false if place missing. */
     private function read_usage_form() {
-        $existing_place = sanitize_text_field( $_POST['place_existing'] ?? '__new__' );
+        $existing_place = sanitize_text_field( wp_unslash( $_POST['place_existing'] ?? '__new__' ) );
         if ( $existing_place === '__new__' ) {
-            $place = sanitize_text_field( $_POST['place_new'] ?? '' );
+            $place = sanitize_text_field( wp_unslash( $_POST['place_new'] ?? '' ) );
         } else {
             $place = $existing_place;
         }
         if ( ! $place ) return false;
+
+        // Clean up any stray escape characters or double spaces
+        $place = str_replace( "\\'", "'", $place );
+        $place = str_replace( '\\\\', '\\', $place );
+        $place = preg_replace( '/\s+/', ' ', $place );
+        $place = trim( $place );
 
         $month = intval( $_POST['month'] ?? 0 );
         if ( $month < 1 || $month > 12 ) $month = null;
@@ -865,7 +890,7 @@ class OBS_Comments_Manager {
         if ( $year < 1900 || $year > 2200 ) $year = null;
 
         $recipients = isset( $_POST['recipients'] ) && is_array( $_POST['recipients'] )
-            ? array_map( 'sanitize_text_field', $_POST['recipients'] )
+            ? array_map( 'sanitize_text_field', wp_unslash( $_POST['recipients'] ) )
             : [];
         $recipients = array_unique( array_filter( $recipients ) );
 
@@ -874,7 +899,7 @@ class OBS_Comments_Manager {
             'month'      => $month,
             'year'       => $year,
             'recipients' => implode( ',', $recipients ),
-            'note'       => sanitize_textarea_field( $_POST['note'] ?? '' ),
+            'note'       => sanitize_textarea_field( wp_unslash( $_POST['note'] ?? '' ) ),
         ];
     }
 
@@ -1306,12 +1331,12 @@ class OBS_Comments_Manager {
 
         $data = [
             'comment_text' => $comment_text,
-            'author_name'  => sanitize_text_field( $_POST['author_name'] ?? '' ),
-            'author_email' => sanitize_email( $_POST['author_email'] ?? '' ),
+            'author_name'  => sanitize_text_field( wp_unslash( $_POST['author_name'] ?? '' ) ),
+            'author_email' => sanitize_email(  wp_unslash( $_POST['author_email'] ?? '' ) ),
             'country'      => $country,
             'source_date'  => ! empty( $_POST['source_date'] ) ? sanitize_text_field( $_POST['source_date'] ) : null,
-            'tags'         => $this->normalize_tags( $_POST['tags'] ?? '' ),
-            'notes'        => sanitize_textarea_field( $_POST['notes'] ?? '' ),
+            'tags'         => $this->normalize_tags( wp_unslash( $_POST['tags'] ?? '' ) ),
+            'notes'        => sanitize_textarea_field( wp_unslash( $_POST['notes'] ?? '' ) ),
             'featured'     => ! empty( $_POST['featured'] ) ? 1 : 0,   // NEW
             'updated_at'   => current_time( 'mysql' ),
         ];
@@ -1433,8 +1458,8 @@ class OBS_Comments_Manager {
         check_admin_referer( 'obs_bulk' );
 
         $ids    = isset( $_POST['ids'] ) ? array_map( 'intval', (array) $_POST['ids'] ) : [];
-        $action = sanitize_text_field( $_POST['bulk_action'] ?? '' );
-        $tag    = sanitize_text_field( $_POST['bulk_tag'] ?? '' );
+        $action = sanitize_text_field( wp_unslash( $_POST['bulk_action'] ?? '' ) );
+        $tag    = sanitize_text_field( wp_unslash( $_POST['bulk_tag'] ?? '' ) );
 
         if ( empty( $ids ) || ! $action ) {
             wp_safe_redirect( admin_url( 'admin.php?page=obs-comments&msg=bulk_none' ) );
@@ -1499,8 +1524,8 @@ class OBS_Comments_Manager {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
         check_admin_referer( 'obs_rename_tag' );
 
-        $old = sanitize_text_field( $_POST['old_tag'] ?? '' );
-        $new = sanitize_text_field( $_POST['new_tag'] ?? '' );
+        $old = sanitize_text_field( wp_unslash( $_POST['old_tag'] ?? '' ) );
+        $new = sanitize_text_field( wp_unslash( $_POST['new_tag'] ?? '' ) );
 
         if ( ! $old || ! $new || $old === $new ) {
             wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-tags' ) );
@@ -1560,7 +1585,7 @@ class OBS_Comments_Manager {
         if ( $stage === 'process' ) {
             check_admin_referer( 'obs_import_process' );
 
-            $token      = sanitize_text_field( $_POST['token'] ?? '' );
+            $token = sanitize_text_field( wp_unslash( $_POST['token'] ?? '' ) );
             $map        = isset( $_POST['map'] ) && is_array( $_POST['map'] ) ? array_map( 'sanitize_text_field', $_POST['map'] ) : [];
             $skip_dupes = ! empty( $_POST['skip_duplicates'] );
 
