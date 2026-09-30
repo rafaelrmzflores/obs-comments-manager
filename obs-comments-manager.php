@@ -2,7 +2,7 @@
 /**
  * Plugin Name: OBS Comments Manager
  * Description: Store, tag, search, and track usage of comments received via email for newsletters and fundraising letters.
- * Version: 2.3.0
+ * Version: 2.4.0
  * Author: Custom
  */
 
@@ -14,7 +14,7 @@ require_once plugin_dir_path( __FILE__ ) . 'obs-recipients.php';
 
 class OBS_Comments_Manager {
 
-    const DB_VERSION  = '2.3';
+    const DB_VERSION  = '2.4';
     const TABLE       = 'obs_comments';
     const USAGE_TABLE = 'obs_usage';
 
@@ -45,6 +45,8 @@ class OBS_Comments_Manager {
 
         // Dashboard
         add_action( 'wp_dashboard_setup', [ $this, 'register_dashboard_widget' ] );
+
+        add_action( 'admin_post_obs_toggle_featured', [ $this, 'handle_toggle_featured' ] );
     }
 
     /* ============================================================
@@ -58,7 +60,22 @@ class OBS_Comments_Manager {
     }
 
     public function maybe_upgrade() {
-        if ( get_option( 'obs_db_version' ) !== self::DB_VERSION ) {
+        $needs_upgrade = get_option( 'obs_db_version' ) !== self::DB_VERSION;
+
+        if ( ! $needs_upgrade ) {
+            global $wpdb;
+            $comments_table = $wpdb->prefix . self::TABLE;
+            $usage_table    = $wpdb->prefix . self::USAGE_TABLE;
+
+            $has_comments = $wpdb->get_var( "SHOW TABLES LIKE '$comments_table'" ) === $comments_table;
+            $has_usage    = $wpdb->get_var( "SHOW TABLES LIKE '$usage_table'" )    === $usage_table;
+
+            if ( ! $has_comments || ! $has_usage ) {
+                $needs_upgrade = true;
+            }
+        }
+
+        if ( $needs_upgrade ) {
             $this->create_or_upgrade_tables();
             obs_get_recipients();
             update_option( 'obs_db_version', self::DB_VERSION );
@@ -83,6 +100,7 @@ class OBS_Comments_Manager {
             source_date DATE DEFAULT NULL,
             tags VARCHAR(500) DEFAULT '',
             usage_count INT UNSIGNED DEFAULT 0,
+            featured TINYINT(1) NOT NULL DEFAULT 0,
             usage_log LONGTEXT DEFAULT '',
             notes TEXT DEFAULT '',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -91,6 +109,7 @@ class OBS_Comments_Manager {
             PRIMARY KEY (id),
             KEY tags (tags(100)),
             KEY usage_count (usage_count),
+            KEY featured (featured),
             KEY created_at (created_at),
             KEY deleted_at (deleted_at),
             KEY country (country)
@@ -193,6 +212,9 @@ class OBS_Comments_Manager {
         if ( $unused ) {
             $where .= ' AND usage_count = 0';
         }
+        if ( ! empty( $_GET['featured'] ) ) {
+            $where .= ' AND featured = 1';
+        }
 
         $sql         = "SELECT * FROM $table $where ORDER BY $orderby $order LIMIT %d OFFSET %d";
         $data_params = array_merge( $params, [ $per_page, $offset ] );
@@ -242,6 +264,11 @@ class OBS_Comments_Manager {
                    class="button <?php echo $unused ? 'button-primary' : ''; ?>">
                     Never Used (<?php echo $unused_count; ?>)
                 </a>
+                <?php $featured_only = ! empty( $_GET['featured'] ); ?>
+                <a href="<?php echo esc_url( $featured_only ? $base_url : add_query_arg( 'featured', '1', $base_url ) ); ?>"
+                class="button <?php echo $featured_only ? 'button-primary' : ''; ?>">
+                    ★ Featured only
+                </a>
                 <?php if ( $search || $tag || $unused || $country ) : ?>
                     <a href="<?php echo esc_url( $base_url ); ?>" class="button">Reset</a>
                 <?php endif; ?>
@@ -257,6 +284,8 @@ class OBS_Comments_Manager {
                         <option value="trash">Move to Trash</option>
                         <option value="add_tag">Add tag</option>
                         <option value="remove_tag">Remove tag</option>
+                        <option value="feature">Add to rotator</option>
+                        <option value="unfeature">Remove from rotator</option>
                     </select>
                     <input type="text" name="bulk_tag" id="obs-bulk-tag" placeholder="Tag (for add/remove)" style="display:none;">
                     <button class="button" onclick="return confirm(obsData.confirmBulk);">Apply</button>
@@ -266,6 +295,7 @@ class OBS_Comments_Manager {
                     <thead>
                         <tr>
                             <td style="width:30px;"><input type="checkbox" id="obs-select-all"></td>
+                            <th style="width:32px;text-align:center;" title="Featured">★</th>
                             <th style="width:50px;">ID</th>
                             <th>Comment</th>
                             <th style="width:120px;">Author</th>
@@ -294,6 +324,16 @@ class OBS_Comments_Manager {
                             ?>
                             <tr>
                                 <td><input type="checkbox" name="ids[]" value="<?php echo intval( $row->id ); ?>"></td>
+                                <td style="text-align:center;">
+                                    <a href="<?php
+                                        echo esc_url( wp_nonce_url(
+                                            admin_url( 'admin-post.php?action=obs_toggle_featured&id=' . $row->id ),
+                                            'obs_toggle_featured_' . $row->id
+                                        ) );
+                                    ?>" class="obs-star" title="<?php echo $row->featured ? 'Remove from rotator' : 'Add to rotator'; ?>">
+                                        <span style="<?php echo $row->featured ? 'color:#f0b429;' : 'color:#ccc;'; ?>font-size:18px;line-height:1;">★</span>
+                                    </a>
+                                </td>
                                 <td><?php echo intval( $row->id ); ?></td>
                                 <td>
                                     <div class="obs-quote" id="obs-quote-<?php echo intval( $row->id ); ?>" data-full="<?php echo esc_attr( $full ); ?>"><?php echo esc_html( $trim ); ?></div>
@@ -350,7 +390,7 @@ class OBS_Comments_Manager {
                             <!-- Inline usage detail row (hidden until toggled) -->
                             <?php if ( $usage_entries ) : ?>
                             <tr class="obs-usage-row" id="obs-usage-row-<?php echo intval( $row->id ); ?>" style="display:none;background:#f8f9fa;">
-                                <td colspan="9" style="padding-left:40px;">
+                                <td colspan="10" style="padding-left:40px;">
                                     <strong>Usage history for comment #<?php echo intval( $row->id ); ?>:</strong>
                                     <table style="width:auto;margin-top:6px;">
                                         <thead>
@@ -399,6 +439,7 @@ class OBS_Comments_Manager {
                             'unused'  => $unused ? 1 : null,
                             'orderby' => $orderby,
                             'order'   => $order,
+                            'featured' => ! empty( $_GET['featured'] ) ? 1 : null,
                         ] ),
                         'format'    => '',
                         'prev_text' => '&laquo;',
@@ -416,6 +457,8 @@ class OBS_Comments_Manager {
         <style>
             .obs-tag{display:inline-block;background:#eef;padding:2px 8px;border-radius:10px;font-size:11px;text-decoration:none;margin:1px;}
             .obs-quote{font-style:italic;}
+            .obs-star { text-decoration: none; }
+            .obs-star:hover span { color: #f0a500 !important; }
         </style>
         <?php
     }
@@ -599,6 +642,16 @@ class OBS_Comments_Manager {
                             <?php $all = $this->get_all_tags(); if ( $all ) : ?>
                                 <p>Existing: <?php foreach ( $all as $t ) : ?><a href="#" class="obs-add-tag" data-tag="<?php echo esc_attr( $t ); ?>"><?php echo esc_html( $t ); ?></a> <?php endforeach; ?></p>
                             <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Rotator</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="featured" value="1" <?php checked( ! empty( $row->featured ) ); ?>>
+                                Show in the comment rotator
+                            </label>
+                            <p class="description">Flag this comment to include it in <code>[obs_rotator featured="yes"]</code>.</p>
                         </td>
                     </tr>
                     <tr>
@@ -1055,6 +1108,7 @@ class OBS_Comments_Manager {
                 <li><code>source_date</code> (YYYY-MM-DD)</li>
                 <li><code>tags</code> (comma-separated inside the cell)</li>
                 <li><code>notes</code></li>
+                <li><code>featured</code> (yes/no)</li>
             </ul>
             <p><em>Structured "where used" entries are not imported — they can be logged afterward.</em></p>
 
@@ -1258,6 +1312,7 @@ class OBS_Comments_Manager {
             'source_date'  => ! empty( $_POST['source_date'] ) ? sanitize_text_field( $_POST['source_date'] ) : null,
             'tags'         => $this->normalize_tags( $_POST['tags'] ?? '' ),
             'notes'        => sanitize_textarea_field( $_POST['notes'] ?? '' ),
+            'featured'     => ! empty( $_POST['featured'] ) ? 1 : 0,   // NEW
             'updated_at'   => current_time( 'mysql' ),
         ];
 
@@ -1347,7 +1402,7 @@ class OBS_Comments_Manager {
         header( 'Content-Type: text/csv' );
         header( 'Content-Disposition: attachment; filename="obs-comments-' . date( 'Y-m-d' ) . '.csv"' );
         $out = fopen( 'php://output', 'w' );
-        fputcsv( $out, [ 'ID', 'Comment', 'Author', 'Email', 'Country', 'Country Name', 'Date Received', 'Tags', 'Usage Count', 'Where Used', 'Notes', 'Added' ] );
+        fputcsv( $out, [ 'ID', 'Comment', 'Author', 'Email', 'Country', 'Country Name', 'Date Received', 'Tags', 'Usage Count', 'Where Used', 'Notes', 'Added', 'Featured' ] );
 
         foreach ( $rows as $r ) {
             // Flatten structured usage entries into a readable string
@@ -1366,7 +1421,7 @@ class OBS_Comments_Manager {
                 $r['id'], $r['comment_text'], $r['author_name'], $r['author_email'],
                 $r['country'], obs_country_name( $r['country'] ),
                 $r['source_date'], $r['tags'], $r['usage_count'],
-                $where_used, $r['notes'], $r['created_at'],
+                $where_used, $r['notes'], $r['created_at'], $r['featured'],
             ] );
         }
         fclose( $out );
@@ -1419,6 +1474,20 @@ class OBS_Comments_Manager {
                         'updated_at' => current_time( 'mysql' ),
                     ], [ 'id' => $id ] );
                     break;
+                
+                    case 'feature':
+                        $wpdb->update( $table, [
+                            'featured'   => 1,
+                            'updated_at' => current_time( 'mysql' ),
+                        ], [ 'id' => $id ] );
+                        break;
+
+                    case 'unfeature':
+                        $wpdb->update( $table, [
+                            'featured'   => 0,
+                            'updated_at' => current_time( 'mysql' ),
+                        ], [ 'id' => $id ] );
+                        break;
             }
         }
 
@@ -1566,6 +1635,8 @@ class OBS_Comments_Manager {
                     $data['author_name'] = sanitize_text_field( $value );
                 } elseif ( $field === 'country' ) {
                     $data['country'] = obs_resolve_country( $value );
+                } elseif ( $field === 'featured' ) {
+                    $data['featured'] = ( strtolower( $value ) === 'yes' || $value === '1' ) ? 1 : 0;
                 }
             }
 
@@ -1678,6 +1749,23 @@ class OBS_Comments_Manager {
             'bulk_done'  => 'Bulk action applied.',
             'bulk_none'  => 'No comments selected.',
         ][ $key ] ?? '';
+    }
+
+    public function handle_toggle_featured() {
+        if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+        $id = intval( $_GET['id'] ?? 0 );
+        check_admin_referer( 'obs_toggle_featured_' . $id );
+
+        global $wpdb;
+        $table = $wpdb->prefix . self::TABLE;
+        $current = (int) $wpdb->get_var( $wpdb->prepare( "SELECT featured FROM $table WHERE id = %d", $id ) );
+        $wpdb->update( $table, [
+            'featured'   => $current ? 0 : 1,
+            'updated_at' => current_time( 'mysql' ),
+        ], [ 'id' => $id ] );
+
+        wp_safe_redirect( wp_get_referer() ?: admin_url( 'admin.php?page=obs-comments' ) );
+        exit;
     }
 }
 

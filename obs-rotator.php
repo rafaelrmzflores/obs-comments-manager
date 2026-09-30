@@ -14,24 +14,28 @@ class OBS_Rotator {
     }
 
     public function register_assets() {
-        // Registered on every page, enqueued only when the shortcode runs
+        $js_path  = plugin_dir_path( __FILE__ ) . 'obs-rotator.js';
+        $css_path = plugin_dir_path( __FILE__ ) . 'obs-rotator.css';
+
         wp_register_script(
             'obs-rotator',
             plugin_dir_url( __FILE__ ) . 'obs-rotator.js',
             [],
-            '1.0.0',
+            file_exists( $js_path ) ? filemtime( $js_path ) : '1.0.0',
             true
         );
+
         wp_register_style(
             'obs-rotator',
             plugin_dir_url( __FILE__ ) . 'obs-rotator.css',
             [],
-            '1.0.0'
+            file_exists( $css_path ) ? filemtime( $css_path ) : '1.0.0'
         );
     }
 
     public function render_shortcode( $atts ) {
         $atts = shortcode_atts( [
+            'ids'          => '',
             'count'        => 20,
             'interval'     => 6,
             'tag'          => '',
@@ -39,6 +43,7 @@ class OBS_Rotator {
             'unused'       => 'no',
             'min_uses'     => '',
             'max_uses'     => '',
+            'featured'     => '',   // NEW
             'show_author'  => 'yes',
             'show_country' => 'no',
             'transition'   => 'fade',
@@ -107,6 +112,21 @@ class OBS_Rotator {
 
         $where  = 'WHERE deleted_at IS NULL';
         $params = [];
+
+        // if ( isset( $atts['featured'] ) && $atts['featured'] === 'yes' ) {
+        //     $where .= ' AND featured = 1';
+        // }
+
+      
+       switch ( $atts['featured'] ) {
+            case 'yes':
+                $where .= ' AND featured = 1';
+                break;
+            case 'no':
+                $where .= ' AND featured = 0';
+                break;
+        }
+
 
         if ( ! empty( $atts['tag'] ) ) {
             $where   .= ' AND FIND_IN_SET(%s, tags)';

@@ -11,7 +11,7 @@
 
 .obs-rotator-stage {
   position: relative;
-  min-height: 5em; /* prevents jump as items swap */
+  min-height: 5em;
 }
 
 .obs-rotator-item {
@@ -22,11 +22,13 @@
   opacity: 0;
 }
 
+/* Active item is visible even before JS runs */
 .obs-rotator-item.is-active {
   display: block;
+  opacity: 1;
 }
 
-/* Transition: fade */
+/* Transition: fade (JS adds .obs-transition-fade on the wrapper) */
 .obs-transition-fade .obs-rotator-item {
   transition: opacity 0.4s ease;
 }
@@ -100,7 +102,6 @@
   background: #4a6fa5;
 }
 
-/* Respect reduced motion preference */
 @media (prefers-reduced-motion: reduce) {
   .obs-rotator-item {
     transition: none !important;
