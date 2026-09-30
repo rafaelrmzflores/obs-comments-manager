@@ -133,27 +133,28 @@ class OBS_Review {
                         <label style="margin-left:10px;"><input type="checkbox" class="obs-review-rec" value="supporters"> Supporters</label>
                         <label style="margin-left:10px;"><input type="checkbox" class="obs-review-rec" value="general"> General</label>
                     </p>
+
                     <p><button type="button" class="button button-primary obs-review-log-save">Mark as used</button>
                        <span class="obs-review-log-msg" style="margin-left:10px;"></span></p>
                 </div>
-            <?php endif; ?>
-        </div>
+                <?php endif; ?>
 
-        <script type="application/json" class="obs-review-data">
-            <?php echo wp_json_encode( array_map( function( $r ) {
-                return [
-                    'id'          => (int) $r->id,
-                    'text'        => $r->comment_text,
-                    'author'      => $r->author_name,
-                    'country'     => $r->country,
-                    'countryName' => $r->country ? obs_country_name( $r->country ) : '',
-                    'tags'        => $r->tags,
-                    'uses'        => (int) $r->usage_count,
-                    'featured'    => (int) $r->featured,
-                ];
-            }, $rows ) ); ?>
-        </script>
-        <?php
+                <script type="application/json" class="obs-review-data">
+                    <?php echo wp_json_encode( array_map( function( $r ) {
+                        return [
+                            'id'          => (int) $r->id,
+                            'text'        => $r->comment_text,
+                            'author'      => $r->author_name,
+                            'country'     => $r->country,
+                            'countryName' => $r->country ? obs_country_name( $r->country ) : '',
+                            'tags'        => $r->tags,
+                            'uses'        => (int) $r->usage_count,
+                            'featured'    => (int) $r->featured,
+                        ];
+                    }, $rows ) ); ?>
+                </script>
+            </div>
+            <?php
         return ob_get_clean();
     }
 
