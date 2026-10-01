@@ -1,0 +1,98 @@
+/* Rotator indicator */
+.obs-tag {
+    display: inline-block;
+    background: #eef;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    text-decoration: none;
+    margin: 1px;
+}
+
+/* Quote previews */
+.obs-quote {
+    font-style: italic;
+}
+
+/* Star toggle */
+.obs-star {
+    text-decoration: none;
+}
+.obs-star:hover span {
+    color: #f0a500 !important;
+}
+
+/* Inline "add tag" pills on the edit screen */
+.obs-add-tag {
+    display: inline-block;
+    background: #eef;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    text-decoration: none;
+    margin: 2px;
+}
+
+/* Merge / rename form layout — used by Places and Tags */
+.obs-merge-form {
+    margin: 16px 0 32px;
+    padding: 20px 24px;
+    background: #f8f9fb;
+    border-left: 4px solid #4a6fa5;
+    border-radius: 4px;
+    max-width: 960px;
+}
+.obs-merge-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.obs-merge-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1 1 260px;
+    min-width: 220px;
+}
+.obs-merge-field label {
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #556;
+}
+.obs-merge-field select,
+.obs-merge-field input[type="text"] {
+    width: 100%;
+    max-width: none;
+    padding: 6px 10px;
+    height: auto;
+    font-size: 14px;
+}
+.obs-merge-arrow {
+    padding: 0 4px 6px;
+    font-size: 20px;
+    color: #889;
+    align-self: flex-end;
+    user-select: none;
+}
+.obs-merge-submit {
+    padding-bottom: 1px;
+    align-self: flex-end;
+}
+.obs-merge-submit .button {
+    height: 32px;
+    padding: 0 18px;
+}
+.obs-merge-hint {
+    margin: 16px 0 0;
+    color: #666;
+    font-size: 13px;
+}
+@media (max-width: 782px) {
+    .obs-merge-row { gap: 12px; }
+    .obs-merge-arrow { display: none; }
+    .obs-merge-field, .obs-merge-submit { flex-basis: 100%; }
+    .obs-merge-submit .button { width: 100%; height: 40px; }
+}

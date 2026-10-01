@@ -141,58 +141,86 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     public function admin_menu() {
-        
-        add_menu_page(
-            'OBS Comments', 'OBS Comments', 'manage_options',
-            'obs-comments', [ $this, 'page_list' ], 'dashicons-format-quote', 25
-        );
-        add_submenu_page( 'obs-comments', 'Add New Comment', 'Add New', 'manage_options', 'obs-comments-new', [ $this, 'page_edit' ] );
-        add_submenu_page( 'obs-comments', 'Import from CSV', 'Import CSV', 'manage_options', 'obs-comments-import', [ $this, 'page_import' ] );
-        add_submenu_page( 'obs-comments', 'Manage Tags', 'Tags', 'manage_options', 'obs-comments-tags', [ $this, 'page_tags' ] );
-        add_submenu_page( 'obs-comments', 'Recipient Groups', 'Recipients', 'manage_options', 'obs-comments-recipients', [ $this, 'page_recipients' ] );
-        
+    add_menu_page(
+        'OBS Comments', 'OBS Comments', 'manage_options',
+        'obs-comments', [ $this, 'page_list' ], 'dashicons-format-quote', 25
+    );
 
-        $places = new OBS_Places();
-        
+    add_submenu_page(
+        'obs-comments', 'Add New Comment', 'Add New', 'manage_options',
+        'obs-comments-new', [ $this, 'page_edit' ]
+    );
 
-        add_submenu_page(
-            'obs-comments', 'Manage Places', 'Places', 'manage_options',
-            'obs-comments-places', [ $places, 'page' ]
-        );
-        
-        $page = new OBS_Admin_Review();
+    // Admin review card
+    $review = new OBS_Admin_Review();
+    add_submenu_page(
+        'obs-comments', 'Review Comments', 'Review', 'manage_options',
+        'obs-comments-review', [ $review, 'page' ]
+    );
 
-        add_submenu_page(
-            'obs-comments',
-            'Review Comments',
-            'Review',
-            'manage_options',
-            'obs-comments-review',
-            [ $page, 'page' ]
-        );
+    // Places (usage locations)
+    $places = new OBS_Places();
+    add_submenu_page(
+        'obs-comments', 'Manage Places', 'Places', 'manage_options',
+        'obs-comments-places', [ $places, 'page' ]
+    );
 
-        $trash_count = $this->get_trash_count();
-        $trash_label = $trash_count
-            ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>'
-            : 'Trash';
-        add_submenu_page( 'obs-comments', 'Trash', $trash_label, 'manage_options', 'obs-comments-trash', [ $this, 'page_trash' ] );
+    add_submenu_page(
+        'obs-comments', 'Manage Tags', 'Tags', 'manage_options',
+        'obs-comments-tags', [ $this, 'page_tags' ]
+    );
 
+    add_submenu_page(
+        'obs-comments', 'Recipient Groups', 'Recipients', 'manage_options',
+        'obs-comments-recipients', [ $this, 'page_recipients' ]
+    );
+
+    add_submenu_page(
+        'obs-comments', 'Import from CSV', 'Import', 'manage_options',
+        'obs-comments-import', [ $this, 'page_import' ]
+    );
+
+    // Only register Export submenu if the method exists (defensive)
+    if ( method_exists( $this, 'page_export' ) ) {
         add_submenu_page(
             'obs-comments', 'Export', 'Export', 'manage_options',
             'obs-comments-export', [ $this, 'page_export' ]
         );
     }
 
+    // Trash (with count badge, last)
+    $trash_count = $this->get_trash_count();
+    $trash_label = $trash_count
+        ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>'
+        : 'Trash';
+    add_submenu_page(
+        'obs-comments', 'Trash', $trash_label, 'manage_options',
+        'obs-comments-trash', [ $this, 'page_trash' ]
+    );
+}
+
     public function admin_assets( $hook ) {
         if ( strpos( $hook, 'obs-comments' ) === false && $hook !== 'index.php' ) return;
-        $admin_js = plugin_dir_path( __FILE__ ) . 'obs-admin.js';
+        
+        $admin_js = plugin_dir_path( __FILE__ ) . 'assets/obs-admin.js';
+        
         wp_enqueue_script(
             'obs-admin',
-            plugin_dir_url( __FILE__ ) . 'obs-admin.js',
+            plugin_dir_url( __FILE__ ) . 'assets/obs-admin.js',
             [ 'jquery' ],
             file_exists( $admin_js ) ? filemtime( $admin_js ) : '2.4.0',
             true
         );
+
+        $admin_css = plugin_dir_path( __FILE__ ) . 'assets/obs-admin.css';
+
+        wp_enqueue_style(
+            'obs-admin',
+            plugin_dir_url( __FILE__ ) . 'assets/obs-admin.css',
+            [],
+            file_exists(  $admin_css ) ? filemtime(  $admin_css ) : '2.4.0',
+        );
+
         wp_localize_script( 'obs-admin', 'obsData', [
             'copiedMsg'   => __( 'Copied!', 'obs' ),
             'failedMsg'   => __( 'Copy failed — select manually', 'obs' ),
@@ -509,12 +537,6 @@ class OBS_Comments_Manager {
 
         <?php $this->render_usage_modal(); ?>
 
-        <style>
-            .obs-tag{display:inline-block;background:#eef;padding:2px 8px;border-radius:10px;font-size:11px;text-decoration:none;margin:1px;}
-            .obs-quote{font-style:italic;}
-            .obs-star { text-decoration: none; }
-            .obs-star:hover span { color: #f0a500 !important; }
-        </style>
         <?php
     }
 
@@ -779,8 +801,6 @@ class OBS_Comments_Manager {
         </div>
 
         <?php $this->render_usage_modal(); ?>
-
-        <style>.obs-add-tag{display:inline-block;background:#eef;padding:2px 8px;border-radius:10px;font-size:11px;text-decoration:none;margin:2px;}</style>
         <?php
     }
 
@@ -1000,27 +1020,45 @@ class OBS_Comments_Manager {
             echo '<div class="notice notice-success is-dismissible"><p>Tag updated.</p></div>';
         }
         ?>
+        
         <div class="wrap">
             <h1>Manage Tags</h1>
-            <div class="card" style="max-width:600px;padding:16px;margin-bottom:20px;">
-                <h2>Rename / Merge Tag</h2>
-                <p>Rename a tag or merge two tags into one.</p>
-                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-                    <input type="hidden" name="action" value="obs_rename_tag">
-                    <?php wp_nonce_field( 'obs_rename_tag' ); ?>
-                    <p>
-                        <select name="old_tag" required style="min-width:180px;">
-                            <option value="">Select tag…</option>
+            
+            <h2 style="margin-top:32px;">Rename / Merge Tag</h2>
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+                class="obs-merge-form">
+                <input type="hidden" name="action" value="obs_rename_tag">
+                <?php wp_nonce_field( 'obs_rename_tag' ); ?>
+
+                <div class="obs-merge-row">
+                    <div class="obs-merge-field">
+                        <label for="obs-tag-source">Rename this tag</label>
+                        <select name="old_tag" id="obs-tag-source" required>
+                            <option value="">— Select a tag —</option>
                             <?php foreach ( array_keys( $tags ) as $t ) : ?>
-                                <option value="<?php echo esc_attr( $t ); ?>"><?php echo esc_html( $t ); ?></option>
+                                <option value="<?php echo esc_attr( $t ); ?>">
+                                    <?php echo esc_html( $t ); ?> (<?php echo (int) ( $tags[ $t ] ?? 0 ); ?>)
+                                </option>
                             <?php endforeach; ?>
                         </select>
-                        <span style="margin:0 10px;">→</span>
-                        <input type="text" name="new_tag" placeholder="new tag name" required>
+                    </div>
+
+                    <div class="obs-merge-arrow" aria-hidden="true">→</div>
+
+                    <div class="obs-merge-field">
+                        <label for="obs-tag-target">Into this tag</label>
+                        <input type="text" name="new_tag" id="obs-tag-target" placeholder="new tag name" required>
+                    </div>
+
+                    <div class="obs-merge-submit">
                         <button class="button button-primary">Rename / Merge</button>
-                    </p>
-                </form>
-            </div>
+                    </div>
+                </div>
+
+                <p class="obs-merge-hint">
+                    All comments with the first tag will be reassigned to the new tag name. If the new name already exists, the two tags are merged.
+                </p>
+            </form>
 
             <table class="wp-list-table widefat fixed striped">
                 <thead><tr><th>Tag</th><th style="width:120px;">Comments</th><th style="width:220px;">Actions</th></tr></thead>
@@ -1042,6 +1080,7 @@ class OBS_Comments_Manager {
                 </tbody>
             </table>
         </div>
+        
         <?php
     }
 
@@ -1124,10 +1163,6 @@ class OBS_Comments_Manager {
                 </tbody>
             </table>
         </div>
-        <style>
-            .obs-tag{display:inline-block;background:#eef;padding:2px 8px;border-radius:10px;font-size:11px;margin:1px;}
-            .obs-quote{font-style:italic;color:#666;}
-        </style>
         <?php
     }
 
@@ -1136,6 +1171,9 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     public function page_import() {
+        if ( ! empty( $_GET['usage_token'] ) ) {
+            echo '<div class="notice notice-info"><p><strong>Usage history file detected.</strong> After the comments are imported, the usage entries will be restored automatically.</p></div>';
+        }
         if ( isset( $_GET['stage'] ) && $_GET['stage'] === 'map' && ! empty( $_GET['token'] ) ) {
             $this->render_import_mapping( sanitize_text_field( $_GET['token'] ) );
             return;
@@ -1144,6 +1182,7 @@ class OBS_Comments_Manager {
             $imported = intval( $_GET['imported'] ?? 0 );
             $skipped  = intval( $_GET['skipped'] ?? 0 );
             $errors   = intval( $_GET['errors'] ?? 0 );
+            $usage    = intval( $_GET['usage'] ?? 0 );
             ?>
             <div class="wrap">
                 <h1>Import Complete</h1>
@@ -1151,6 +1190,9 @@ class OBS_Comments_Manager {
                     <strong><?php echo $imported; ?></strong> comments imported.
                     <strong><?php echo $skipped; ?></strong> skipped as duplicates.
                     <strong><?php echo $errors; ?></strong> rows skipped due to errors.
+                    <?php if ( $usage ) : ?>
+                        <br><strong><?php echo $usage; ?></strong> usage entries restored.
+                    <?php endif; ?>
                 </p></div>
                 <p><a class="button button-primary" href="<?php echo esc_url( admin_url( 'admin.php?page=obs-comments' ) ); ?>">View All Comments</a></p>
             </div>
@@ -1178,12 +1220,27 @@ class OBS_Comments_Manager {
             <?php endif; ?>
 
             <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data" style="margin-top:20px;">
-                <input type="hidden" name="action" value="obs_import">
-                <input type="hidden" name="stage" value="upload">
-                <?php wp_nonce_field( 'obs_import_upload' ); ?>
-                <p><input type="file" name="csv_file" accept=".csv,text/csv" required></p>
-                <p><button class="button button-primary">Upload &amp; Preview</button></p>
-            </form>
+            <input type="hidden" name="action" value="obs_import">
+            <input type="hidden" name="stage" value="upload">
+            <?php wp_nonce_field( 'obs_import_upload' ); ?>
+
+            <table class="form-table">
+                <tr>
+                    <th><label for="csv_file">Comments CSV *</label></th>
+                    <td><input type="file" name="csv_file" id="csv_file" accept=".csv,text/csv" required>
+                        <p class="description">Required. The main comments file.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label for="usage_file">Usage CSV</label></th>
+                    <td><input type="file" name="usage_file" id="usage_file" accept=".csv,text/csv">
+                        <p class="description">Optional. If provided, usage history will be restored and linked to the imported comments by ID.</p>
+                    </td>
+                </tr>
+            </table>
+
+            <p><button class="button button-primary">Upload</button></p>
+        </form>
         </div>
         <?php
     }
@@ -1211,12 +1268,22 @@ class OBS_Comments_Manager {
         $fields = [
             ''             => '— Skip this column —',
             'comment_text' => 'Comment Text (required)',
+            'comment'      => 'Comment Text (from export)',       // NEW
             'author_name'  => 'Author Name',
+            'author'       => 'Author Name (from export)',        // NEW
             'author_email' => 'Author Email',
+            'email'        => 'Author Email (from export)',       // NEW
             'country'      => 'Country',
+            'country_name' => 'Country Name (informational)',     // NEW
             'source_date'  => 'Date Received (YYYY-MM-DD)',
+            'date_received'=> 'Date Received (from export)',      // NEW
             'tags'         => 'Tags',
             'notes'        => 'Notes',
+            'featured'     => 'Featured (yes/no)',                // NEW
+            'usage_count'  => 'Usage Count (ignored on import)',  // NEW
+            'where_used'   => 'Where Used (ignored on import)',   // NEW
+            'added'        => 'Added (ignored on import)',        // NEW
+        'id' => 'ID (links usage history)',                       // NEW
         ];
 
         $auto = [];
@@ -1457,21 +1524,20 @@ class OBS_Comments_Manager {
         check_admin_referer( 'obs_export' );
 
         global $wpdb;
-        $table = $wpdb->prefix . self::TABLE;
+        $comments_table = $wpdb->prefix . self::TABLE;
+        $usage_table    = $wpdb->prefix . self::USAGE_TABLE;
 
-        // ---- Read filters from POST or GET ----
-        $input = ! empty( $_POST ) ? $_POST : $_GET;
-
-        $search        = isset( $input['s'] )       ? sanitize_text_field( wp_unslash( $input['s'] ) )     : '';
-        $tag           = isset( $input['tag'] )     ? sanitize_text_field( wp_unslash( $input['tag'] ) )   : '';
-        $country       = isset( $input['country'] ) ? strtoupper( sanitize_text_field( wp_unslash( $input['country'] ) ) ) : '';
-        $scope         = isset( $input['scope'] )   ? sanitize_key( $input['scope'] )                      : '';
-        $unused        = ! empty( $input['unused'] )   || $scope === 'unused';
-        $featured      = ! empty( $input['featured'] ) || $scope === 'featured';
+        // ---- Filters (same as before) ----
+        $input    = ! empty( $_POST ) ? $_POST : $_GET;
+        $search   = isset( $input['s'] )       ? sanitize_text_field( wp_unslash( $input['s'] ) )     : '';
+        $tag      = isset( $input['tag'] )     ? sanitize_text_field( wp_unslash( $input['tag'] ) )   : '';
+        $country  = isset( $input['country'] ) ? strtoupper( sanitize_text_field( wp_unslash( $input['country'] ) ) ) : '';
+        $scope    = isset( $input['scope'] )   ? sanitize_key( $input['scope'] )                      : '';
+        $unused   = ! empty( $input['unused'] )   || $scope === 'unused';
+        $featured = ! empty( $input['featured'] ) || $scope === 'featured';
         $include_usage = ! isset( $input['include_usage'] ) || ! empty( $input['include_usage'] );
         $include_notes = ! isset( $input['include_notes'] ) || ! empty( $input['include_notes'] );
 
-        // ---- Build WHERE clause ----
         $where  = 'WHERE deleted_at IS NULL';
         $params = [];
 
@@ -1495,74 +1561,100 @@ class OBS_Comments_Manager {
             $where   .= ' AND country = %s';
             $params[] = $country;
         }
-        if ( $unused ) {
-            $where .= ' AND usage_count = 0';
-        }
-        if ( $featured ) {
-            $where .= ' AND featured = 1';
-        }
+        if ( $unused )   $where .= ' AND usage_count = 0';
+        if ( $featured ) $where .= ' AND featured = 1';
 
-        $sql  = "SELECT * FROM $table $where ORDER BY source_date DESC, created_at DESC";
+        $sql  = "SELECT * FROM $comments_table $where ORDER BY source_date DESC, created_at DESC";
         $rows = $params
             ? $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A )
             : $wpdb->get_results( $sql, ARRAY_A );
 
-        // ---- Build filename suffix from active filters ----
-        $suffix = '';
-        if ( $tag )      $suffix .= '-' . sanitize_title( $tag );
-        if ( $country )  $suffix .= '-' . strtolower( $country );
-        if ( $featured ) $suffix .= '-featured';
-        if ( $unused )   $suffix .= '-unused';
+        // ---- Build comment IDs list for the usage query ----
+        $comment_ids = array_map( 'intval', array_column( $rows, 'id' ) );
 
-        // ---- Send headers ----
-        header( 'Content-Type: text/csv' );
-        header( 'Content-Disposition: attachment; filename="obs-comments' . $suffix . '-' . date( 'Y-m-d' ) . '.csv"' );
+        // ---- Stream both files into a zip ----
+        $tmp_dir  = wp_upload_dir()['basedir'] . '/obs-export-' . wp_generate_password( 8, false );
+        wp_mkdir_p( $tmp_dir );
 
-        $out = fopen( 'php://output', 'w' );
+        $comments_file = $tmp_dir . '/comments.csv';
+        $usage_file    = $tmp_dir . '/usage.csv';
+        $zip_file      = $tmp_dir . '/obs-export-' . date( 'Y-m-d' ) . '.zip';
 
-        // ---- Write header row (respecting include flags) ----
+        // --- comments.csv ---
+        $cf = fopen( $comments_file, 'w' );
         $header = [ 'ID', 'Comment', 'Author', 'Email', 'Country', 'Country Name', 'Date Received', 'Tags', 'Usage Count' ];
-        if ( $include_usage ) $header[] = 'Where Used';
         if ( $include_notes ) $header[] = 'Notes';
         $header[] = 'Added';
         $header[] = 'Featured';
-        fputcsv( $out, $header );
+        fputcsv( $cf, $header );
 
-        // ---- Write data rows ----
         foreach ( $rows as $r ) {
             $row = [
-                $r['id'],
-                $r['comment_text'],
-                $r['author_name'],
-                $r['author_email'],
-                $r['country'],
-                obs_country_name( $r['country'] ),
-                $r['source_date'],
-                $r['tags'],
-                $r['usage_count'],
+                $r['id'], $r['comment_text'], $r['author_name'], $r['author_email'],
+                $r['country'], obs_country_name( $r['country'] ),
+                $r['source_date'], $r['tags'], $r['usage_count'],
             ];
-
-            if ( $include_usage ) {
-                $entries = $this->get_usage_entries( $r['id'] );
-                $lines   = [];
-                foreach ( $entries as $e ) {
-                    $parts = [ $e->place_name ];
-                    $date  = $this->format_usage_date( $e->month, $e->year );
-                    if ( $date !== '—' ) $parts[] = $date;
-                    if ( $e->recipients ) $parts[] = '(' . $e->recipients . ')';
-                    $lines[] = implode( ' — ', $parts );
-                }
-                $row[] = implode( ' | ', $lines );
-            }
-
             if ( $include_notes ) $row[] = $r['notes'];
             $row[] = $r['created_at'];
             $row[] = $r['featured'];
+            fputcsv( $cf, $row );
+        }
+        fclose( $cf );
 
-            fputcsv( $out, $row );
+        // --- usage.csv ---
+        $uf = fopen( $usage_file, 'w' );
+        fputcsv( $uf, [ 'comment_id', 'place_name', 'month', 'year', 'recipients', 'note', 'created_at' ] );
+
+        if ( $comment_ids ) {
+            // Batch in case of large sets
+            $chunks = array_chunk( $comment_ids, 500 );
+            foreach ( $chunks as $chunk ) {
+                $in   = implode( ',', array_map( 'intval', $chunk ) );
+                $usrs = $wpdb->get_results(
+                    "SELECT comment_id, place_name, month, year, recipients, note, created_at
+                    FROM $usage_table
+                    WHERE comment_id IN ($in)
+                    ORDER BY comment_id, year, month, id",
+                    ARRAY_A
+                );
+                foreach ( $usrs as $u ) {
+                    fputcsv( $uf, [
+                        $u['comment_id'], $u['place_name'],
+                        $u['month'], $u['year'],
+                        $u['recipients'], $u['note'], $u['created_at'],
+                    ] );
+                }
+            }
+        }
+        fclose( $uf );
+
+        // --- zip ---
+        if ( class_exists( 'ZipArchive' ) ) {
+            $zip = new ZipArchive();
+            if ( $zip->open( $zip_file, ZipArchive::CREATE | ZipArchive::OVERWRITE ) === true ) {
+                $zip->addFile( $comments_file, 'comments.csv' );
+                $zip->addFile( $usage_file,    'usage.csv' );
+                $zip->close();
+            }
+            @unlink( $comments_file );
+            @unlink( $usage_file );
+
+            header( 'Content-Type: application/zip' );
+            header( 'Content-Disposition: attachment; filename="obs-export-' . date( 'Y-m-d' ) . '.zip"' );
+            header( 'Content-Length: ' . filesize( $zip_file ) );
+            readfile( $zip_file );
+            @unlink( $zip_file );
+            @rmdir( $tmp_dir );
+            exit;
         }
 
-        fclose( $out );
+        // Fallback if ZipArchive isn't available: send just comments.csv (old behavior)
+        header( 'Content-Type: text/csv' );
+        header( 'Content-Disposition: attachment; filename="obs-comments-' . date( 'Y-m-d' ) . '.csv"' );
+        readfile( $comments_file );
+        @unlink( $comments_file );
+        @unlink( $usage_file );
+        @rmdir( $tmp_dir );
         exit;
     }
 
@@ -1677,6 +1769,7 @@ class OBS_Comments_Manager {
         if ( $stage === 'upload' ) {
             check_admin_referer( 'obs_import_upload' );
 
+            // Comments file (required)
             if ( empty( $_FILES['csv_file']['tmp_name'] ) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK ) {
                 wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-import&msg=upload_failed' ) );
                 exit;
@@ -1691,14 +1784,25 @@ class OBS_Comments_Manager {
                 exit;
             }
 
-            wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-import&stage=map&token=' . $token ) );
+            // Usage file (optional)
+            $usage_dest = '';
+            if ( ! empty( $_FILES['usage_file']['tmp_name'] ) && $_FILES['usage_file']['error'] === UPLOAD_ERR_OK ) {
+                $usage_dest = $dir . '/' . $token . '-usage.csv';
+                if ( ! move_uploaded_file( $_FILES['usage_file']['tmp_name'], $usage_dest ) ) {
+                    $usage_dest = '';
+                }
+            }
+
+            $redirect = admin_url( 'admin.php?page=obs-comments-import&stage=map&token=' . $token );
+            if ( $usage_dest ) $redirect .= '&usage_token=' . $token;
+            wp_safe_redirect( $redirect );
             exit;
         }
 
         if ( $stage === 'process' ) {
             check_admin_referer( 'obs_import_process' );
 
-            $token = sanitize_text_field( wp_unslash( $_POST['token'] ?? '' ) );
+            $token      = sanitize_text_field( wp_unslash( $_POST['token'] ?? '' ) );
             $map        = isset( $_POST['map'] ) && is_array( $_POST['map'] ) ? array_map( 'sanitize_text_field', $_POST['map'] ) : [];
             $skip_dupes = ! empty( $_POST['skip_duplicates'] );
 
@@ -1711,12 +1815,21 @@ class OBS_Comments_Manager {
             $result = $this->process_import( $file, $map, $skip_dupes );
             @unlink( $file );
 
+            // ---- NEW: import usage rows if a usage file was uploaded ----
+            $usage_imported = 0;
+            $usage_file = $this->get_upload_path( $token . '-usage' );  // expects token-usage.csv
+            if ( file_exists( $usage_file ) ) {
+                $usage_imported = $this->process_usage_import( $usage_file, $result['id_map'] );
+                @unlink( $usage_file );
+            }
+
             wp_safe_redirect( add_query_arg( [
                 'page'     => 'obs-comments-import',
                 'stage'    => 'done',
                 'imported' => $result['imported'],
                 'skipped'  => $result['skipped'],
                 'errors'   => $result['errors'],
+                'usage'    => $usage_imported,
             ], admin_url( 'admin.php' ) ) );
             exit;
         }
@@ -1730,17 +1843,18 @@ class OBS_Comments_Manager {
         $table = $wpdb->prefix . self::TABLE;
 
         $handle = fopen( $file, 'r' );
-        if ( ! $handle ) return [ 'imported' => 0, 'skipped' => 0, 'errors' => 1 ];
+        if ( ! $handle ) return [ 'imported' => 0, 'skipped' => 0, 'errors' => 0, 'id_map' => [] ];
 
         fgetcsv( $handle );
         $imported = 0;
         $skipped  = 0;
         $errors   = 0;
+        $id_map   = [];  // old_id => new_id
 
         $comment_index = array_search( 'comment_text', $map, true );
         if ( $comment_index === false ) {
             fclose( $handle );
-            return [ 'imported' => 0, 'skipped' => 0, 'errors' => 1 ];
+            return [ 'imported' => 0, 'skipped' => 0, 'errors' => 1, 'id_map' => [] ];
         }
 
         while ( ( $row = fgetcsv( $handle ) ) !== false ) {
@@ -1752,12 +1866,17 @@ class OBS_Comments_Manager {
                 'source_date'  => null,
                 'tags'         => '',
                 'notes'        => '',
+                'featured'     => 0,   // NEW: explicit default
             ];
 
+            $old_id = 0;
             foreach ( $map as $col_index => $field ) {
                 if ( ! $field || ! isset( $row[ $col_index ] ) ) continue;
                 $value = trim( $row[ $col_index ] );
 
+                if ( $field === 'id' ) {
+                    $old_id = (int) $row[ $col_index ];
+                }
                 if ( $field === 'comment_text' ) {
                     $data['comment_text'] = wp_kses_post( $value );
                 } elseif ( $field === 'author_email' ) {
@@ -1783,13 +1902,14 @@ class OBS_Comments_Manager {
                 continue;
             }
 
-            if ( $skip_dupes ) {
+                if ( $skip_dupes ) {
                 $exists = $wpdb->get_var( $wpdb->prepare(
                     "SELECT id FROM $table WHERE comment_text = %s AND deleted_at IS NULL LIMIT 1",
                     $data['comment_text']
                 ) );
                 if ( $exists ) {
                     $skipped++;
+                    if ( $old_id ) $id_map[ $old_id ] = (int) $exists;
                     continue;
                 }
             }
@@ -1797,12 +1917,23 @@ class OBS_Comments_Manager {
             $data['created_at'] = current_time( 'mysql' );
             $data['updated_at'] = current_time( 'mysql' );
             $ok = $wpdb->insert( $table, $data );
-            if ( $ok ) $imported++;
-            else $errors++;
+            if ( $ok ) {
+                $imported++;
+                if ( $old_id ) $id_map[ $old_id ] = (int) $wpdb->insert_id;
+            } else {
+                $errors++;
+            }
         }
 
         fclose( $handle );
-        return compact( 'imported', 'skipped', 'errors' );
+        // return compact( 'imported', 'skipped', 'errors', 'id_map' );
+        return [
+            'imported' => $imported,
+            'skipped'  => $skipped,
+            'errors'   => $errors,
+            'id_map'   => $id_map,
+            'id_map_size' => count( $id_map ),   // optional diagnostic
+        ];
     }
 
     private function get_upload_dir() {
@@ -1819,6 +1950,60 @@ class OBS_Comments_Manager {
         $token = preg_replace( '/[^A-Za-z0-9]/', '', $token );
         if ( ! $token ) return '';
         return $this->get_upload_dir() . '/' . $token . '.csv';
+    }
+
+    private function process_usage_import( $file, $id_map ) {
+        global $wpdb;
+        $usage_table = $wpdb->prefix . self::USAGE_TABLE;
+        $comments_table = $wpdb->prefix . self::TABLE;
+
+        $handle = fopen( $file, 'r' );
+        if ( ! $handle ) return 0;
+
+        $header = fgetcsv( $handle );
+        $map    = array_flip( $header );   // column name => index
+        $count  = 0;
+
+        while ( ( $row = fgetcsv( $handle ) ) !== false ) {
+            $old_id = isset( $map['comment_id'] ) ? (int) ( $row[ $map['comment_id'] ] ?? 0 ) : 0;
+            if ( ! $old_id || ! isset( $id_map[ $old_id ] ) ) continue;   // skip rows with no matching comment
+            $new_id = (int) $id_map[ $old_id ];
+
+            $place      = sanitize_text_field( $row[ $map['place_name'] ] ?? '' );
+            $month      = (int) ( $row[ $map['month'] ] ?? 0 );
+            $year       = (int) ( $row[ $map['year'] ] ?? 0 );
+            $recipients = sanitize_text_field( $row[ $map['recipients'] ] ?? '' );
+            $note       = sanitize_textarea_field( $row[ $map['note'] ] ?? '' );
+            $created_at = sanitize_text_field( $row[ $map['created_at'] ] ?? '' );
+
+            if ( ! $place ) continue;
+
+            $wpdb->insert( $usage_table, [
+                'comment_id' => $new_id,
+                'place_name' => str_replace( [ "\\'", '\\\\' ], [ "'", '\\' ], $place ),
+                'month'      => $month >= 1 && $month <= 12 ? $month : null,
+                'year'       => $year  >= 1900 && $year <= 2200 ? $year : null,
+                'recipients' => $recipients,
+                'note'       => $note,
+                'created_at' => $created_at ?: current_time( 'mysql' ),
+            ] );
+            $count++;
+        }
+
+        fclose( $handle );
+
+        // Recalculate usage_count for every affected comment
+        if ( $id_map ) {
+            foreach ( array_unique( array_values( $id_map ) ) as $cid ) {
+                $total = (int) $wpdb->get_var( $wpdb->prepare(
+                    "SELECT COUNT(*) FROM $usage_table WHERE comment_id = %d",
+                    $cid
+                ) );
+                $wpdb->update( $comments_table, [ 'usage_count' => $total ], [ 'id' => $cid ] );
+            }
+        }
+
+        return $count;
     }
 
     /* ============================================================
