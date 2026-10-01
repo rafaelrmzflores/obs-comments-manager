@@ -4,9 +4,10 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class OBS_Places {
 
     public function __construct() {
-        add_action( 'admin_post_obs_rename_place', [ $this, 'handle_rename' ] );
-        add_action( 'admin_post_obs_delete_place', [ $this, 'handle_delete' ] );
-        add_action( 'admin_post_obs_merge_places', [ $this, 'handle_merge' ] );
+        add_action( 'admin_post_obs_place_rename', [ $this, 'handle_place_rename' ] );
+        add_action( 'admin_post_obs_delete_place', [ $this, 'handle_place_delete' ] );
+        add_action( 'admin_post_obs_merge_places', [ $this, 'handle_place_merge' ] );
+        add_action( 'admin_post_obs_place_save',   [ $this, 'handle_place_save' ] );
     }
 
     public function page() {
@@ -31,19 +32,35 @@ class OBS_Places {
         ?>
         <div class="wrap">
             <h1 class="wp-heading-inline">Places</h1>
-            <p class="description">Every distinct "where used" place across all comments. Rename, delete, or merge.</p>
+            <p class="description">Every distinct "where used" place across all comments. Create, rename, delete, or merge.</p>
 
             <?php if ( isset( $_GET['msg'] ) ) : ?>
                 <div class="notice notice-success is-dismissible"><p>
                 <?php
                 switch ( $_GET['msg'] ) {
+                    case 'created': echo 'Place added to the registry.'; break;
                     case 'renamed': echo 'Place renamed across all usages.'; break;
                     case 'deleted': echo 'All usages for that place were deleted.'; break;
                     case 'merged':  echo 'Places merged successfully.'; break;
+                    case 'empty':   echo 'Place name was empty.'; break;
                 }
                 ?>
                 </p></div>
             <?php endif; ?>
+            
+            <h2>Add a new place</h2>
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-bottom:24px;padding:16px 20px;background:#f8f9fb;border-left:3px solid #4a6fa5;max-width:600px;">
+                <input type="hidden" name="action" value="obs_place_save">
+                <?php wp_nonce_field( 'obs_place_save' ); ?>
+                <p style="display:flex;gap:12px;align-items:flex-end;">
+                    <label style="flex:1;">
+                        <span style="display:block;font-weight:600;font-size:12px;text-transform:uppercase;color:#556;margin-bottom:6px;">Place name</span>
+                        <input type="text" name="place_name" placeholder="e.g. Spring 2026 Newsletter" required style="width:100%;">
+                    </label>
+                    <button class="button button-primary">Add place</button>
+                </p>
+                <p class="description">New places appear in every usage dropdown immediately, even before you use them.</p>
+            </form>
 
             <h2 style="margin-top:32px;">Merge two places</h2>
             <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
@@ -101,7 +118,14 @@ class OBS_Places {
                 </thead>
                 <tbody>
                 <?php if ( empty( $rows ) ) : ?>
-                    <tr><td colspan="6">No usage entries yet.</td></tr>
+
+                    <tr><td colspan="6">
+                        No usage entries yet.
+                        <?php if ( function_exists( 'obs_get_all_place_names' ) && obs_get_all_place_names() ) : ?>
+                            You have registered places — they'll appear in the usage dropdown on the comment edit screen.
+                        <?php endif; ?>
+                    </td></tr>
+
                 <?php else : foreach ( $rows as $r ) :
                     $first = $r->first_use && $r->first_use !== '-' ? date( 'M Y', strtotime( $r->first_use . '-01' ) ) : '—';
                     $last  = $r->last_use  && $r->last_use  !== '-' ? date( 'M Y', strtotime( $r->last_use  . '-01' ) ) : '—';
@@ -137,7 +161,7 @@ class OBS_Places {
             <div style="background:#fff;max-width:480px;margin:100px auto;padding:20px;border-radius:6px;">
                 <h2>Rename place</h2>
                 <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-                    <input type="hidden" name="action" value="obs_rename_place">
+                    <input type="hidden" name="action" value="obs_place_rename">
                     <input type="hidden" name="old_name" id="obs-rename-old" value="">
                     <?php wp_nonce_field( 'obs_rename_place' ); ?>
                     <p><label>New name</label><br>
@@ -167,7 +191,7 @@ class OBS_Places {
         <?php
     }
 
-    public function handle_rename() {
+    public function handle_place_rename() {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
         check_admin_referer( 'obs_rename_place' );
 
@@ -189,7 +213,7 @@ class OBS_Places {
         exit;
     }
 
-    public function handle_delete() {
+    public function handle_place_delete() {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
         $place = sanitize_text_field( wp_unslash( $_GET['place'] ?? '' ) );
         check_admin_referer( 'obs_delete_place_' . md5( $place ) );
@@ -197,11 +221,18 @@ class OBS_Places {
         global $wpdb;
         $wpdb->delete( $wpdb->prefix . 'obs_usage', [ 'place_name' => $place ] );
 
+        // Also remove from registry
+        $list = get_option( 'obs_places_registry', [] );
+        if ( is_array( $list ) ) {
+            $list = array_values( array_diff( $list, [ $place ] ) );
+            update_option( 'obs_places_registry', $list );
+        }
+
         wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-places&msg=deleted' ) );
         exit;
     }
 
-    public function handle_merge() {
+    public function handle_place_merge() {
         if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
         check_admin_referer( 'obs_merge_places' );
 
@@ -219,7 +250,61 @@ class OBS_Places {
             [ 'place_name' => $source ]
         );
 
+        // Remove source from registry
+        $list = get_option( 'obs_places_registry', [] );
+        if ( is_array( $list ) ) {
+            $list = array_values( array_diff( $list, [ $source ] ) );
+            update_option( 'obs_places_registry', $list );
+        }
+        
         wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-places&msg=merged' ) );
         exit;
+    }
+
+    public function handle_place_save() {
+        if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Unauthorized' );
+        check_admin_referer( 'obs_place_save' );
+
+        $raw  = isset( $_POST['place_name'] ) ? wp_unslash( $_POST['place_name'] ) : '';
+        $name = sanitize_text_field( trim( $raw ) );
+
+        if ( $name === '' ) {
+            wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-places&msg=empty' ) );
+            exit;
+        }
+
+        $list = get_option( 'obs_places_registry', [] );
+        if ( ! is_array( $list ) ) $list = [];
+
+        if ( ! in_array( $name, $list, true ) ) {
+            $list[] = $name;
+            sort( $list );
+            $list = array_values( array_unique( $list ) );
+            update_option( 'obs_places_registry', $list );
+        }
+
+        wp_safe_redirect( admin_url( 'admin.php?page=obs-comments-places&msg=created' ) );
+        exit;
+    }
+}
+
+if ( ! function_exists( 'obs_get_all_place_names' ) ) {
+    /** Combined list of registry names + place names actually in use. */
+    function obs_get_all_place_names() {
+        static $cache = null;
+        if ( $cache !== null ) return $cache;
+
+        global $wpdb;
+        $from_option = get_option( 'obs_places_registry', [] );
+        if ( ! is_array( $from_option ) ) $from_option = [];
+
+        $from_usage = $wpdb->get_col(
+            "SELECT DISTINCT place_name FROM " . $wpdb->prefix . 'obs_usage' . "
+            WHERE place_name != '' ORDER BY place_name"
+        );
+
+        $merged = array_unique( array_filter( array_merge( $from_option, $from_usage ) ) );
+        sort( $merged );
+        return $cache = $merged;
     }
 }

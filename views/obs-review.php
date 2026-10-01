@@ -133,9 +133,11 @@ class OBS_Review {
                     <p>
                         <select class="obs-review-place" style="min-width:200px;">
                             <option value="__new__">— New place —</option>
-                            <?php foreach ( $this->get_places() as $p ) : ?>
+
+                            <?php foreach ( obs_get_all_place_names() as $p ) : ?>
                                 <option value="<?php echo esc_attr( $p ); ?>"><?php echo esc_html( $p ); ?></option>
                             <?php endforeach; ?>
+
                         </select>
                         <input type="text" class="obs-review-place-new" placeholder="New place name" style="display:none;min-width:200px;">
                         <select class="obs-review-month">

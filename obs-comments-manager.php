@@ -20,14 +20,18 @@ class OBS_Comments_Manager {
 
         require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-countries.php';
         require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-rotator.php';
-        $OBS_Rotator = new OBS_Rotator();
+        $OBS_Rotator = new OBS_Rotator();   // local is fine — it only registers shortcode/hooks
+
         require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-recipients.php';
+
         require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-places.php';
-        $OBS_Places = new OBS_Places();
+        $this->places = new OBS_Places();
+
         require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-review.php';
-        $OBS_Review = new OBS_Review();
+        $OBS_Review = new OBS_Review();     // local is fine — it only registers shortcodes
+
         require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-admin-review.php';
-        $OBS_Admin_Review = new OBS_Admin_Review();
+        $this->review = new OBS_Admin_Review();
 
         register_activation_hook( __FILE__, [ $this, 'activate' ] );
         add_action( 'plugins_loaded',        [ $this, 'maybe_upgrade' ] );
@@ -155,63 +159,60 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     public function admin_menu() {
-    add_menu_page(
-        'OBS Comments', 'OBS Comments', 'manage_options',
-        'obs-comments', [ $this, 'page_list' ], 'dashicons-format-quote', 25
-    );
+        add_menu_page(
+            'OBS Comments', 'OBS Comments', 'manage_options',
+            'obs-comments', [ $this, 'page_list' ], 'dashicons-format-quote', 25
+        );
 
-    add_submenu_page(
-        'obs-comments', 'Add New Comment', 'Add New', 'manage_options',
-        'obs-comments-new', [ $this, 'page_edit' ]
-    );
-
-    // Admin review card
-    $review = new OBS_Admin_Review();
-    add_submenu_page(
-        'obs-comments', 'Review Comments', 'Review', 'manage_options',
-        'obs-comments-review', [ $review, 'page' ]
-    );
-
-    // Places (usage locations)
-    $places = new OBS_Places();
-    add_submenu_page(
-        'obs-comments', 'Manage Places', 'Places', 'manage_options',
-        'obs-comments-places', [ $places, 'page' ]
-    );
-
-    add_submenu_page(
-        'obs-comments', 'Manage Tags', 'Tags', 'manage_options',
-        'obs-comments-tags', [ $this, 'page_tags' ]
-    );
-
-    add_submenu_page(
-        'obs-comments', 'Recipient Groups', 'Recipients', 'manage_options',
-        'obs-comments-recipients', [ $this, 'page_recipients' ]
-    );
-
-    add_submenu_page(
-        'obs-comments', 'Import from CSV', 'Import', 'manage_options',
-        'obs-comments-import', [ $this, 'page_import' ]
-    );
-
-    // Only register Export submenu if the method exists (defensive)
-    if ( method_exists( $this, 'page_export' ) ) {
         add_submenu_page(
-            'obs-comments', 'Export', 'Export', 'manage_options',
-            'obs-comments-export', [ $this, 'page_export' ]
+            'obs-comments', 'Add New Comment', 'Add New', 'manage_options',
+            'obs-comments-new', [ $this, 'page_edit' ]
+        );
+
+        // Review — method lives on OBS_Admin_Review
+        add_submenu_page(
+            'obs-comments', 'Review Comments', 'Review', 'manage_options',
+            'obs-comments-review', [ $this->review, 'page' ]
+        );
+
+        // Places — method lives on OBS_Places
+        add_submenu_page(
+            'obs-comments', 'Manage Places', 'Places', 'manage_options',
+            'obs-comments-places', [ $this->places, 'page' ]
+        );
+
+        // Everything below uses methods on OBS_Comments_Manager itself — $this is correct
+        add_submenu_page(
+            'obs-comments', 'Manage Tags', 'Tags', 'manage_options',
+            'obs-comments-tags', [ $this, 'page_tags' ]
+        );
+
+        add_submenu_page(
+            'obs-comments', 'Recipient Groups', 'Recipients', 'manage_options',
+            'obs-comments-recipients', [ $this, 'page_recipients' ]
+        );
+
+        add_submenu_page(
+            'obs-comments', 'Import from CSV', 'Import', 'manage_options',
+            'obs-comments-import', [ $this, 'page_import' ]
+        );
+
+        if ( method_exists( $this, 'page_export' ) ) {
+            add_submenu_page(
+                'obs-comments', 'Export', 'Export', 'manage_options',
+                'obs-comments-export', [ $this, 'page_export' ]
+            );
+        }
+
+        $trash_count = $this->get_trash_count();
+        $trash_label = $trash_count
+            ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>'
+            : 'Trash';
+        add_submenu_page(
+            'obs-comments', 'Trash', $trash_label, 'manage_options',
+            'obs-comments-trash', [ $this, 'page_trash' ]
         );
     }
-
-    // Trash (with count badge, last)
-    $trash_count = $this->get_trash_count();
-    $trash_label = $trash_count
-        ? 'Trash <span class="update-plugins count-' . $trash_count . '"><span class="update-count">' . $trash_count . '</span></span>'
-        : 'Trash';
-    add_submenu_page(
-        'obs-comments', 'Trash', $trash_label, 'manage_options',
-        'obs-comments-trash', [ $this, 'page_trash' ]
-    );
-}
 
     public function admin_assets( $hook ) {
         if ( strpos( $hook, 'obs-comments' ) === false && $hook !== 'index.php' ) return;
@@ -236,11 +237,11 @@ class OBS_Comments_Manager {
         );
 
         wp_localize_script( 'obs-admin', 'obsData', [
-            'copiedMsg'   => __( 'Copied!', 'obs' ),
-            'failedMsg'   => __( 'Copy failed — select manually', 'obs' ),
-            'confirmBulk' => __( 'Apply this bulk action to the selected comments?', 'obs' ),
-            'confirmPurge'=> __( 'Permanently delete? This cannot be undone.', 'obs' ),
-            'confirmUsageDelete' => __( 'Delete this usage entry?', 'obs' ),
+            'copiedMsg'   => __( 'Copied!', 'obs-comments-manager' ),
+            'failedMsg'   => __( 'Copy failed — select manually', 'obs-comments-manager' ),
+            'confirmBulk' => __( 'Apply this bulk action to the selected comments?', 'obs-comments-manager' ),
+            'confirmPurge'=> __( 'Permanently delete? This cannot be undone.', 'obs-comments-manager' ),
+            'confirmUsageDelete' => __( 'Delete this usage entry?', 'obs-comments-manager' ),
         ]);
     }
 
@@ -559,7 +560,9 @@ class OBS_Comments_Manager {
      * ============================================================ */
 
     private function render_usage_modal( $prefill = null ) {
-        $places    = $this->get_distinct_places();
+        $places = function_exists( 'obs_get_all_place_names' )
+        ? obs_get_all_place_names()
+        : $this->get_distinct_places();
         $recipients = obs_get_recipients();
         $prefill   = $prefill ? (array) $prefill : [];
 
