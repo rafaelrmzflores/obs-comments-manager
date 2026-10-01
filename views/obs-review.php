@@ -14,8 +14,25 @@ class OBS_Review {
     }
 
     public function assets() {
-        wp_register_style( 'obs-review', plugin_dir_url( __FILE__ ) . 'obs-review.css', [], '1.0.0' );
-        wp_register_script( 'obs-review', plugin_dir_url( __FILE__ ) . 'obs-review.js', [ 'jquery' ], '1.0.0', true );
+
+        $admin_css = OBS_COMMENT_MANAGER_PATH . 'assets/obs-review.css';
+
+        wp_register_style(
+            'obs-review',
+            OBS_COMMENT_MANAGER_URL . 'assets/obs-review.css',
+            [],
+            file_exists(  $admin_css ) ? filemtime(  $admin_css ) : OBS_COMMENT_MANAGER_VERSION,
+        );
+
+        $admin_js = OBS_COMMENT_MANAGER_PATH . 'assets/obs-review.js';
+        
+        wp_register_script(
+            'obs-review',
+            OBS_COMMENT_MANAGER_URL . 'assets/obs-review.js',
+            [ 'jquery' ],
+            file_exists( $admin_js ) ? filemtime( $admin_js ) : OBS_COMMENT_MANAGER_VERSION,
+            true
+        );
     }
 
     public function render( $atts ) {
@@ -214,5 +231,3 @@ class OBS_Review {
         wp_send_json_success( [ 'uses' => $count ] );
     }
 }
-
-new OBS_Review();

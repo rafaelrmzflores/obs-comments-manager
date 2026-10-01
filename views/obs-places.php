@@ -223,5 +223,3 @@ class OBS_Places {
         exit;
     }
 }
-
-new OBS_Places();

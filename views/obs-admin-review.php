@@ -4,30 +4,35 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class OBS_Admin_Review {
 
     public function __construct() {
+
         // Registered from the main plugin's admin_menu later
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue' ] );
         add_action( 'wp_ajax_obs_review_toggle_featured', [ $this, 'ajax_toggle_featured' ] );
         add_action( 'wp_ajax_obs_review_log_usage',      [ $this, 'ajax_log_usage' ] );
     }
-
+    
     /**
      * Enqueue assets only on the admin review page.
      */
     public function enqueue( $hook ) {
         if ( strpos( $hook, 'obs-comments-review' ) === false ) return;
 
+        $admin_css = OBS_COMMENT_MANAGER_PATH . 'assets/obs-review.css';
+
         wp_enqueue_style(
             'obs-review',
-            plugin_dir_url( __FILE__ ) . 'obs-review.css',
+            OBS_COMMENT_MANAGER_URL . 'assets/obs-review.css',
             [],
-            '1.0.0'
+            file_exists(  $admin_css ) ? filemtime(  $admin_css ) : OBS_COMMENT_MANAGER_VERSION,
         );
 
+        $admin_js = OBS_COMMENT_MANAGER_PATH . 'assets/obs-review.js';
+        
         wp_enqueue_script(
             'obs-review',
-            plugin_dir_url( __FILE__ ) . 'obs-review.js',
+            OBS_COMMENT_MANAGER_URL . 'assets/obs-review.js',
             [ 'jquery' ],
-            '1.0.0',
+            file_exists( $admin_js ) ? filemtime( $admin_js ) : OBS_COMMENT_MANAGER_VERSION,
             true
         );
     }
@@ -304,5 +309,3 @@ class OBS_Admin_Review {
         wp_send_json_success( [ 'uses' => $count ] );
     }
 }
-
-new OBS_Admin_Review();

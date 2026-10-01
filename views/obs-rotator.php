@@ -14,23 +14,26 @@ class OBS_Rotator {
     }
 
     public function register_assets() {
-        $js_path  = plugin_dir_path( __FILE__ ) . 'obs-rotator.js';
-        $css_path = plugin_dir_path( __FILE__ ) . 'obs-rotator.css';
 
-        wp_register_script(
-            'obs-rotator',
-            plugin_dir_url( __FILE__ ) . 'obs-rotator.js',
-            [],
-            file_exists( $js_path ) ? filemtime( $js_path ) : '1.0.0',
-            true
-        );
+        $css_path = OBS_COMMENT_MANAGER_PATH . 'assets/obs-rotator.css';
 
         wp_register_style(
             'obs-rotator',
-            plugin_dir_url( __FILE__ ) . 'obs-rotator.css',
+            OBS_COMMENT_MANAGER_URL . 'assets/obs-rotator.css',
             [],
-            file_exists( $css_path ) ? filemtime( $css_path ) : '1.0.0'
+            file_exists(  $css_path ) ? filemtime(  $css_path ) : OBS_COMMENT_MANAGER_VERSION,
         );
+
+        $js_path = OBS_COMMENT_MANAGER_PATH . 'assets/obs-rotator.js';
+        
+        wp_register_script(
+            'obs-rotator',
+            OBS_COMMENT_MANAGER_URL . 'assets/obs-rotator.js',
+            [ 'jquery' ],
+            file_exists( $js_path ) ? filemtime( $js_path ) : OBS_COMMENT_MANAGER_VERSION,
+            true
+        );
+
     }
 
     public function render_shortcode( $atts ) {
@@ -163,5 +166,3 @@ class OBS_Rotator {
         return $wpdb->get_results( $wpdb->prepare( $sql, $params ) );
     }
 }
-
-new OBS_Rotator();

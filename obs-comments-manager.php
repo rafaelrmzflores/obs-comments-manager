@@ -2,27 +2,33 @@
 /**
  * Plugin Name: OBS Comments Manager
  * Description: Store, tag, search, and track usage of comments received via email for newsletters and fundraising letters.
- * Version: 2.4.0
- * Author: Custom
+ * Version: 2.4.3
+ * Author: Rafael Ramírez
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-require_once plugin_dir_path( __FILE__ ) . 'obs-countries.php';
-require_once plugin_dir_path( __FILE__ ) . 'obs-rotator.php';
-require_once plugin_dir_path( __FILE__ ) . 'obs-recipients.php';
-require_once plugin_dir_path( __FILE__ ) . 'obs-places.php';
-require_once plugin_dir_path( __FILE__ ) . 'obs-review.php';
-require_once plugin_dir_path( __FILE__ ) . 'obs-admin-review.php';
-
 
 class OBS_Comments_Manager {
 
-    const DB_VERSION  = '2.4';
+    const DB_VERSION  = '2.4.3';
     const TABLE       = 'obs_comments';
     const USAGE_TABLE = 'obs_usage';
 
     public function __construct() {
+        $this->define_constants();
+
+        require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-countries.php';
+        require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-rotator.php';
+        $OBS_Rotator = new OBS_Rotator();
+        require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-recipients.php';
+        require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-places.php';
+        $OBS_Places = new OBS_Places();
+        require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-review.php';
+        $OBS_Review = new OBS_Review();
+        require_once  OBS_COMMENT_MANAGER_PATH . 'views/obs-admin-review.php';
+        $OBS_Admin_Review = new OBS_Admin_Review();
+
         register_activation_hook( __FILE__, [ $this, 'activate' ] );
         add_action( 'plugins_loaded',        [ $this, 'maybe_upgrade' ] );
         add_action( 'admin_menu',            [ $this, 'admin_menu' ] );
@@ -51,6 +57,14 @@ class OBS_Comments_Manager {
         add_action( 'wp_dashboard_setup', [ $this, 'register_dashboard_widget' ] );
 
         add_action( 'admin_post_obs_toggle_featured', [ $this, 'handle_toggle_featured' ] );
+    }
+    
+    public function define_constants() {
+        define('OBS_COMMENT_MANAGER_PATH', plugin_dir_path(__FILE__));
+        define('OBS_COMMENT_MANAGER_URL', plugin_dir_url(__FILE__));
+        define('OBS_COMMENT_MANAGER_VERSION', self::DB_VERSION );
+        define ( 'OBS_COMMENT_MANAGER_TABLE', self::TABLE );
+        define ( 'OBS_COMMENT_MANAGER_USAGE_TABLE', self::USAGE_TABLE );
     }
 
     /* ============================================================
@@ -1265,32 +1279,61 @@ class OBS_Comments_Manager {
             return;
         }
 
+        // ---------------------------------------------------------------------
+        // Canonical target fields — this is what the DROPDOWN offers.
+        // value = internal field name used by process_import()
+        // ---------------------------------------------------------------------
         $fields = [
             ''             => '— Skip this column —',
             'comment_text' => 'Comment Text (required)',
-            'comment'      => 'Comment Text (from export)',       // NEW
             'author_name'  => 'Author Name',
-            'author'       => 'Author Name (from export)',        // NEW
             'author_email' => 'Author Email',
-            'email'        => 'Author Email (from export)',       // NEW
-            'country'      => 'Country',
-            'country_name' => 'Country Name (informational)',     // NEW
+            'country'      => 'Country (2-letter ISO code)',
             'source_date'  => 'Date Received (YYYY-MM-DD)',
-            'date_received'=> 'Date Received (from export)',      // NEW
             'tags'         => 'Tags',
             'notes'        => 'Notes',
-            'featured'     => 'Featured (yes/no)',                // NEW
-            'usage_count'  => 'Usage Count (ignored on import)',  // NEW
-            'where_used'   => 'Where Used (ignored on import)',   // NEW
-            'added'        => 'Added (ignored on import)',        // NEW
-        'id' => 'ID (links usage history)',                       // NEW
+            'featured'     => 'Featured (yes/no or 1/0)',
+            'id'           => 'ID (links usage history)',
+        ];
+
+        // ---------------------------------------------------------------------
+        // Aliases: how a header in the CSV maps to a canonical target.
+        // Maps to '' means "explicitly skip" (informational columns).
+        // ---------------------------------------------------------------------
+        $aliases = [
+            // canonical names
+            'comment_text'    => 'comment_text',
+            'author_name'     => 'author_name',
+            'author_email'    => 'author_email',
+            'country'         => 'country',
+            'source_date'     => 'source_date',
+            'tags'            => 'tags',
+            'notes'           => 'notes',
+            'featured'        => 'featured',
+            'id'              => 'id',
+
+            // exporter-friendly labels
+            'comment'         => 'comment_text',
+            'author'          => 'author_name',
+            'email'           => 'author_email',
+            'date_received'   => 'source_date',
+            'date'            => 'source_date',
+
+            // informational columns — explicitly skipped
+            'country_name'    => '',
+            'usage_count'     => '',
+            'where_used'      => '',
+            'added'           => '',
+            'created_at'      => '',
         ];
 
         $auto = [];
         foreach ( $header as $i => $col ) {
             $key = strtolower( trim( $col ) );
             $key = str_replace( [ ' ', '-' ], '_', $key );
-            if ( isset( $fields[ $key ] ) ) $auto[ $i ] = $key;
+            if ( isset( $aliases[ $key ] ) ) {
+                $auto[ $i ] = $aliases[ $key ];   // '' means skip
+            }
         }
         ?>
         <div class="wrap">
@@ -1314,7 +1357,7 @@ class OBS_Comments_Manager {
                             <tr>
                                 <td><strong><?php echo esc_html( $col ); ?></strong></td>
                                 <td>
-                                    <select name="map[<?php echo intval( $i ); ?>]" style="min-width:200px;">
+                                    <select name="map[<?php echo intval( $i ); ?>]" style="min-width:240px;">
                                         <?php foreach ( $fields as $val => $label ) : ?>
                                             <option value="<?php echo esc_attr( $val ); ?>" <?php selected( $auto[ $i ] ?? '', $val ); ?>><?php echo esc_html( $label ); ?></option>
                                         <?php endforeach; ?>
@@ -1845,7 +1888,8 @@ class OBS_Comments_Manager {
         $handle = fopen( $file, 'r' );
         if ( ! $handle ) return [ 'imported' => 0, 'skipped' => 0, 'errors' => 0, 'id_map' => [] ];
 
-        fgetcsv( $handle );
+        fgetcsv( $handle );  // skip header
+
         $imported = 0;
         $skipped  = 0;
         $errors   = 0;
@@ -1866,34 +1910,52 @@ class OBS_Comments_Manager {
                 'source_date'  => null,
                 'tags'         => '',
                 'notes'        => '',
-                'featured'     => 0,   // NEW: explicit default
+                'featured'     => 0,
             ];
 
             $old_id = 0;
+
             foreach ( $map as $col_index => $field ) {
                 if ( ! $field || ! isset( $row[ $col_index ] ) ) continue;
                 $value = trim( $row[ $col_index ] );
 
-                if ( $field === 'id' ) {
-                    $old_id = (int) $row[ $col_index ];
-                }
-                if ( $field === 'comment_text' ) {
-                    $data['comment_text'] = wp_kses_post( $value );
-                } elseif ( $field === 'author_email' ) {
-                    $data['author_email'] = sanitize_email( $value );
-                } elseif ( $field === 'source_date' ) {
-                    $ts = strtotime( $value );
-                    $data['source_date'] = $ts ? date( 'Y-m-d', $ts ) : null;
-                } elseif ( $field === 'tags' ) {
-                    $data['tags'] = $this->normalize_tags( $value );
-                } elseif ( $field === 'notes' ) {
-                    $data['notes'] = sanitize_textarea_field( $value );
-                } elseif ( $field === 'author_name' ) {
-                    $data['author_name'] = sanitize_text_field( $value );
-                } elseif ( $field === 'country' ) {
-                    $data['country'] = obs_resolve_country( $value );
-                } elseif ( $field === 'featured' ) {
-                    $data['featured'] = ( strtolower( $value ) === 'yes' || $value === '1' ) ? 1 : 0;
+                switch ( $field ) {
+                    case 'id':
+                        $old_id = (int) $value;
+                        break;
+
+                    case 'comment_text':
+                        $data['comment_text'] = wp_kses_post( $value );
+                        break;
+
+                    case 'author_name':
+                        $data['author_name'] = sanitize_text_field( $value );
+                        break;
+
+                    case 'author_email':
+                        $data['author_email'] = sanitize_email( $value );
+                        break;
+
+                    case 'country':
+                        $data['country'] = obs_resolve_country( $value );
+                        break;
+
+                    case 'source_date':
+                        $ts = strtotime( $value );
+                        $data['source_date'] = $ts ? date( 'Y-m-d', $ts ) : null;
+                        break;
+
+                    case 'tags':
+                        $data['tags'] = $this->normalize_tags( $value );
+                        break;
+
+                    case 'notes':
+                        $data['notes'] = sanitize_textarea_field( $value );
+                        break;
+
+                    case 'featured':
+                        $data['featured'] = ( strtolower( $value ) === 'yes' || $value === '1' ) ? 1 : 0;
+                        break;
                 }
             }
 
@@ -1902,10 +1964,11 @@ class OBS_Comments_Manager {
                 continue;
             }
 
-                if ( $skip_dupes ) {
+            if ( $skip_dupes ) {
                 $exists = $wpdb->get_var( $wpdb->prepare(
-                    "SELECT id FROM $table WHERE comment_text = %s AND deleted_at IS NULL LIMIT 1",
-                    $data['comment_text']
+                    "SELECT id FROM $table WHERE comment_text = %s AND author_name = %s AND deleted_at IS NULL LIMIT 1",
+                    $data['comment_text'],
+                    $data['author_name']
                 ) );
                 if ( $exists ) {
                     $skipped++;
@@ -1917,6 +1980,7 @@ class OBS_Comments_Manager {
             $data['created_at'] = current_time( 'mysql' );
             $data['updated_at'] = current_time( 'mysql' );
             $ok = $wpdb->insert( $table, $data );
+
             if ( $ok ) {
                 $imported++;
                 if ( $old_id ) $id_map[ $old_id ] = (int) $wpdb->insert_id;
@@ -1926,13 +1990,13 @@ class OBS_Comments_Manager {
         }
 
         fclose( $handle );
-        // return compact( 'imported', 'skipped', 'errors', 'id_map' );
+
         return [
-            'imported' => $imported,
-            'skipped'  => $skipped,
-            'errors'   => $errors,
-            'id_map'   => $id_map,
-            'id_map_size' => count( $id_map ),   // optional diagnostic
+            'imported'    => $imported,
+            'skipped'     => $skipped,
+            'errors'      => $errors,
+            'id_map'      => $id_map,
+            'id_map_size' => count( $id_map ),
         ];
     }
 
